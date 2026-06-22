@@ -1,5 +1,5 @@
 
-print("VenyxUI v2.5.1 loaded")
+print("VenyxUI v2.5.2 loaded")
 --[[
     VenyxUI Library v2.5
     Fixes: tabs truly left-aligned (AutomaticCanvasSize removed; manual CanvasSize
@@ -151,11 +151,33 @@ VenyxUI.__index = VenyxUI
 function VenyxUI:CreateWindow(title, options)
     options    = options or {}
     local toggleKey = options.ToggleKey or Enum.KeyCode.Insert
-    local autoSave  = options.AutoSave ~= false
 
     local savedData   = loadConfig()
     local connections = {}
     local function track(conn) connections[#connections + 1] = conn; return conn end
+
+    -- AutoSave preference: a previously-saved choice (from the Config tab's
+    -- master toggle) overrides whatever was passed into CreateWindow, so it
+    -- survives between sessions.
+    local autoSave = options.AutoSave ~= false
+    if savedData["_autosave_enabled"] ~= nil then
+        autoSave = savedData["_autosave_enabled"] == true
+    end
+
+    -- Registry of every saveable control (toggle/slider/dropdown/keybind),
+    -- in the order they were created, used to populate the Config tab's
+    -- "what to auto-save" list.
+    local saveRegistry = {}
+
+    -- Keys excluded from auto-save even when the master switch is on,
+    -- restored from the previous session.
+    local excludedKeys = {}
+    do
+        local list = savedData["_autosave_excluded"]
+        if type(list) == "table" then
+            for _, k in ipairs(list) do excludedKeys[k] = true end
+        end
+    end
 
     -- Only one dropdown open at a time
     local activeDropdown = nil
@@ -757,6 +779,7 @@ function VenyxUI:CreateWindow(title, options)
         -- ── Toggle ──────────────────────────
         function Tab:AddToggle(label, description, default, callback)
             local key       = label:lower():gsub(" ", "_")
+            saveRegistry[#saveRegistry + 1] = { key = key, label = label }
             local hasDesc   = description and description ~= ""
             local row       = makeRow(#TabFrame:GetChildren() + 1, hasDesc and 52 or 42)
 
@@ -820,7 +843,7 @@ function VenyxUI:CreateWindow(title, options)
                         BackgroundColor3 = Theme.TextDim })
                 end
                 if not silent then
-                    if autoSave then savedData[key] = val; saveConfig(savedData) end
+                    if autoSave and not excludedKeys[key] then savedData[key] = val; saveConfig(savedData) end
                     if callback then callback(val) end
                     Notify(ScreenGui, label .. ": " .. (val and "Enabled" or "Disabled"),
                         val and Theme.Success or Theme.Danger)
@@ -844,6 +867,7 @@ function VenyxUI:CreateWindow(title, options)
         -- ── Slider ──────────────────────────
         function Tab:AddSlider(label, min, max, default, suffix, callback)
             local key  = "slider_" .. label:lower():gsub(" ", "_")
+            saveRegistry[#saveRegistry + 1] = { key = key, label = label }
             local row  = makeRow(#TabFrame:GetChildren() + 1, 52)
             suffix     = suffix or ""
             if min >= max then max = min + 1 end
@@ -917,7 +941,7 @@ function VenyxUI:CreateWindow(title, options)
                     ValLabel.Text = tostring(value) .. suffix
                     Tween(TrackFill,   { Size     = UDim2.new(rel, 0, 1, 0) })
                     Tween(SliderThumb, { Position = UDim2.new(rel, -7, 0.5, -7) })
-                    if autoSave then savedData[key] = value; saveConfig(savedData) end
+                    if autoSave and not excludedKeys[key] then savedData[key] = value; saveConfig(savedData) end
                     if callback then callback(value) end
                 end
             end
@@ -952,7 +976,7 @@ function VenyxUI:CreateWindow(title, options)
                     ValLabel.Text = tostring(val) .. suffix
                     Tween(TrackFill,   { Size     = UDim2.new(rel, 0, 1, 0) })
                     Tween(SliderThumb, { Position = UDim2.new(rel, -7, 0.5, -7) })
-                    if autoSave then savedData[key] = val; saveConfig(savedData) end
+                    if autoSave and not excludedKeys[key] then savedData[key] = val; saveConfig(savedData) end
                     if callback then callback(val) end
                 end,
             }
@@ -961,6 +985,7 @@ function VenyxUI:CreateWindow(title, options)
         -- ── Dropdown ────────────────────────
         function Tab:AddDropdown(label, opts, default, callback)
             local key      = "dd_" .. label:lower():gsub(" ", "_")
+            saveRegistry[#saveRegistry + 1] = { key = key, label = label }
             local row      = makeRow(#TabFrame:GetChildren() + 1)
             local sv       = savedData[key]
             local selected = sv or default or opts[1]
@@ -1055,7 +1080,7 @@ function VenyxUI:CreateWindow(title, options)
                     end
                     Tween(DropList, { Size = UDim2.new(0, 140, 0, 0) })
                     task.delay(0.15, function() DropList.Visible = false end)
-                    if autoSave then savedData[key] = opt; saveConfig(savedData) end
+                    if autoSave and not excludedKeys[key] then savedData[key] = opt; saveConfig(savedData) end
                     if callback then callback(opt) end
                     Notify(ScreenGui, label .. ": " .. opt, Theme.Accent)
                 end))
@@ -1114,7 +1139,7 @@ function VenyxUI:CreateWindow(title, options)
                             c.TextColor3 = (c.Text == val) and Theme.Accent or Theme.TextMuted
                         end
                     end
-                    if autoSave then savedData[key] = val; saveConfig(savedData) end
+                    if autoSave and not excludedKeys[key] then savedData[key] = val; saveConfig(savedData) end
                     if callback then callback(val) end
                 end,
             }
@@ -1151,6 +1176,7 @@ function VenyxUI:CreateWindow(title, options)
         -- ── Keybind ─────────────────────────
         function Tab:AddKeybind(label, default, callback)
             local key        = "kb_" .. label:lower():gsub(" ", "_")
+            saveRegistry[#saveRegistry + 1] = { key = key, label = label }
             local sv         = savedData[key]
             local currentKey = (sv and Enum.KeyCode[sv]) or default
             local listening  = false
@@ -1220,7 +1246,7 @@ function VenyxUI:CreateWindow(title, options)
                 KeyBtn.Text       = currentKey.Name
                 KeyBtn.TextColor3 = Color3.fromRGB(157, 143, 255)
                 listening         = false
-                if autoSave then savedData[key] = currentKey.Name; saveConfig(savedData) end
+                if autoSave and not excludedKeys[key] then savedData[key] = currentKey.Name; saveConfig(savedData) end
                 bindPress(currentKey)
                 Notify(ScreenGui, label .. " bound to " .. currentKey.Name, Theme.Accent)
             end))
@@ -1248,6 +1274,54 @@ function VenyxUI:CreateWindow(title, options)
         return Tab
     end
 
+    -- ── Config tab ──────────────────────────
+    -- Call this LAST, after every other tab/toggle/slider/dropdown/keybind
+    -- has been added, so the "what to auto-save" list below is complete.
+    function WindowObj:AddConfigTab(name, icon)
+        -- Snapshot now: every Tab:AddToggle call below registers itself in
+        -- saveRegistry too, so iterating the live table while adding more
+        -- toggles to it would self-reference and never terminate.
+        local registrySnapshot = {}
+        for i, item in ipairs(saveRegistry) do registrySnapshot[i] = item end
+
+        local ConfigTab = self:AddTab(name or "Config", icon)
+
+        ConfigTab:AddSection("General")
+        ConfigTab:AddToggle("Auto save", "Automatically save settings as you change them",
+            autoSave, function(val)
+                autoSave = val
+                -- Persist this preference itself unconditionally (bypassing
+                -- the autoSave flag it controls), so it's remembered even
+                -- when the user just turned auto-save off.
+                savedData["_autosave_enabled"] = val
+                saveConfig(savedData)
+                Notify(ScreenGui, "Auto save: " .. (val and "Enabled" or "Disabled"),
+                    val and Theme.Success or Theme.Danger)
+            end)
+
+        if #registrySnapshot > 0 then
+            ConfigTab:AddSection("What to auto-save")
+            for _, item in ipairs(registrySnapshot) do
+                ConfigTab:AddToggle("Save: " .. item.label, nil,
+                    not excludedKeys[item.key], function(val)
+                        if val then
+                            excludedKeys[item.key] = nil
+                        else
+                            excludedKeys[item.key] = true
+                        end
+                        local list = {}
+                        for k in pairs(excludedKeys) do list[#list + 1] = k end
+                        savedData["_autosave_excluded"] = list
+                        saveConfig(savedData) -- persist the exclusion list itself, always
+                    end)
+            end
+        else
+            ConfigTab:AddLabel("No saveable features registered yet — add this tab last.")
+        end
+
+        return ConfigTab
+    end
+
     function WindowObj:Notify(msg, color, duration)
         Notify(ScreenGui, msg, color, duration)
     end
@@ -1264,6 +1338,7 @@ function VenyxUI:CreateWindow(title, options)
 end
 
 return VenyxUI
+
 
 
 
