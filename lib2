@@ -1,3 +1,5 @@
+print("VenyxUI v2.2 loaded")
+
 --[[
     VenyxUI Library v2.2
     Fixes: tabs left-aligned, scroll only when truly full, dropdown arrow uses ASCII,
