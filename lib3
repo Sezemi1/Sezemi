@@ -1,7 +1,7 @@
 
-print("VenyxUI v2.4 loaded")
+print("VenyxUI v2.5 loaded")
 --[[
-    VenyxUI Library v2.4
+    VenyxUI Library v2.5
     Fixes: tabs truly left-aligned (AutomaticCanvasSize removed; manual CanvasSize
            assignment keeps content anchored to the left edge), scroll only when
            truly full, dropdown arrow uses ASCII, all v2.2 bug fixes retained.
@@ -272,7 +272,7 @@ function VenyxUI:CreateWindow(title, options)
         Size             = UDim2.new(0, 50, 0, 20),
         Position         = UDim2.new(1, -110, 0.5, -10),
         BackgroundColor3 = Color3.fromRGB(40, 34, 80),
-        Text             = "v2.4",
+        Text             = "v2.5",
         TextColor3       = Color3.fromRGB(157, 143, 255),
         TextSize         = 10,
         Font             = Enum.Font.GothamBold,
@@ -294,12 +294,11 @@ function VenyxUI:CreateWindow(title, options)
     }, { Create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
 
     -- ── Tab Bar ─────────────────────────────
-    -- Plain clipping Frame + sliding inner frame.
-    -- ScrollingFrame + AutomaticCanvasSize was dropped because tab buttons use
-    -- AutomaticSize.X whose resolution is async: the canvas size ended up 0
-    -- by the time refreshTabScroll ran, making all tabs invisible.
-    -- Plain Frame has no such race — we size TabInner explicitly after each tab
-    -- is added using synchronous TextService measurement.
+    -- Use a plain clipping Frame + inner sliding Frame instead of ScrollingFrame.
+    -- ScrollingFrame with AutomaticCanvasSize has a race condition: the canvas
+    -- size is set before AutomaticSize on the tab buttons resolves, so the
+    -- buttons end up invisible. A plain Frame with manual Position sliding
+    -- has no such issue — layout is synchronous.
     local TabBar = Create("Frame", {
         Name             = "TabBar",
         Size             = UDim2.new(1, 0, 0, 38),
@@ -319,7 +318,7 @@ function VenyxUI:CreateWindow(title, options)
         }),
     })
 
-    -- Inner container — slides left/right to scroll when tabs overflow
+    -- Inner frame that holds the actual tab buttons; slide its X position to scroll.
     local TabInner = Create("Frame", {
         Name             = "TabInner",
         Size             = UDim2.new(1, 0, 1, 0),
@@ -338,7 +337,7 @@ function VenyxUI:CreateWindow(title, options)
         Parent              = TabInner,
     })
 
-    -- 8 px left padding spacer (always LayoutOrder 0)
+    -- 8 px left-padding spacer (LayoutOrder 0 = always first)
     Create("Frame", {
         Size             = UDim2.new(0, 8, 1, 0),
         BackgroundTransparency = 1,
@@ -346,7 +345,7 @@ function VenyxUI:CreateWindow(title, options)
         Parent           = TabInner,
     })
 
-    -- Overflow chevron (only visible when tabs are wider than the bar)
+    -- Overflow chevron (shown when tabs are wider than the bar)
     local OverflowIndicator = Create("TextLabel", {
         Size             = UDim2.new(0, 28, 1, -2),
         Position         = UDim2.new(1, -28, 0, 1),
@@ -375,11 +374,12 @@ function VenyxUI:CreateWindow(title, options)
         local barW     = TabBar.AbsoluteSize.X
         local over     = contentW > barW + 1
         OverflowIndicator.Visible = over
-        -- Always expand TabInner to fit content so buttons are never cropped
-        TabInner.Size = UDim2.new(0, math.max(contentW, barW), 1, 0)
         if not over then
             TabInner.Position = UDim2.new(0, 0, 0, 0)
         end
+        -- Expand TabInner so it is always at least as wide as its content
+        -- (needed so the layout has room and buttons don't wrap)
+        TabInner.Size = UDim2.new(0, math.max(contentW, barW), 1, 0)
     end
 
     track(TabLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(refreshTabScroll))
@@ -586,11 +586,12 @@ function VenyxUI:CreateWindow(title, options)
         tabIndex = tabIndex + 1
         local myIndex = tabIndex
 
-        -- Measure text width synchronously so the button has a real pixel Size
-        -- the instant it is created — no AutomaticSize async delay.
+        -- Measure text synchronously so Size is correct immediately.
+        -- This avoids any AutomaticSize race condition with the canvas.
         local tabLabel = (icon and (icon .. " ") or "") .. name
-        local tabBtnW  = game:GetService("TextService"):GetTextSize(
-            tabLabel, 12, Enum.Font.GothamSemibold, Vector2.new(9999, 38)).X + 20
+        local tabTextW = game:GetService("TextService"):GetTextSize(
+            tabLabel, 12, Enum.Font.GothamSemibold, Vector2.new(1000, 38)).X
+        local tabBtnW  = tabTextW + 20  -- 10px padding each side
 
         local TabBtn = Create("TextButton", {
             Size          = UDim2.new(0, tabBtnW, 1, 0),
@@ -644,8 +645,7 @@ function VenyxUI:CreateWindow(title, options)
         track(TabBtn.MouseButton1Click:Connect(activate))
         if myIndex == 1 then activate() end
 
-        -- Refresh canvas now — TabBtn has an explicit pixel Size so
-        -- AbsoluteContentSize is already correct at this point.
+        -- Refresh canvas synchronously now that button has an explicit pixel Size.
         refreshTabScroll()
 
         -- ──────────────────────────────────
@@ -978,8 +978,13 @@ function VenyxUI:CreateWindow(title, options)
                     optBtn.TextColor3 = (opt == selected) and Theme.Accent or Theme.TextMuted
                 end))
                 track(optBtn.MouseButton1Click:Connect(function()
-                    selected      = opt
-                    DropBtn.Text  = opt .. "  v"
+                    -- Nil activeDropdown and reset open IMMEDIATELY so the
+                    -- global InputBegan click-outside handler (same frame) is a
+                    -- no-op and does not fight with the toggle logic on DropBtn.
+                    activeDropdown = nil
+                    open           = false
+                    selected       = opt
+                    DropBtn.Text   = opt .. "  v"
                     for _, c in ipairs(DropList:GetChildren()) do
                         if c:IsA("TextButton") then
                             c.TextColor3 = (c.Text == opt) and Theme.Accent or Theme.TextMuted
@@ -987,7 +992,6 @@ function VenyxUI:CreateWindow(title, options)
                     end
                     Tween(DropList, { Size = UDim2.new(0, 140, 0, 0) })
                     task.delay(0.15, function() DropList.Visible = false end)
-                    activeDropdown = nil
                     if autoSave then savedData[key] = opt; saveConfig(savedData) end
                     if callback then callback(opt) end
                     Notify(ScreenGui, label .. ": " .. opt, Theme.Accent)
@@ -997,11 +1001,15 @@ function VenyxUI:CreateWindow(title, options)
             local open = false
 
             local function closeDropdown()
-                open         = false
-                DropBtn.Text = selected .. "  v"
-                Tween(DropList, { Size = UDim2.new(0, 140, 0, 0) })
-                task.delay(0.15, function() DropList.Visible = false end)
+                open           = false
                 activeDropdown = nil
+                DropBtn.Text   = selected .. "  v"
+                Tween(DropList, { Size = UDim2.new(0, 140, 0, 0) })
+                -- Capture current list ref so a fast reopen doesn't get hidden
+                local listRef = DropList
+                task.delay(0.15, function()
+                    if not open then listRef.Visible = false end
+                end)
             end
 
             track(DropBtn.MouseButton1Click:Connect(function()
@@ -1115,14 +1123,19 @@ function VenyxUI:CreateWindow(title, options)
                 Create("UIStroke", { Color = Theme.Border, Thickness = 1 }),
             })
 
-            -- Bind the press-action listener to whatever key is current
+            -- Bind the press-action listener to whatever key is current.
+            -- If no callback supplied, pressing the key toggles the window
+            -- (so AddKeybind("UI Toggle", key) works with no extra argument).
             local function bindPress(kc)
                 if pressConn then pressConn:Disconnect() end
                 pressConn = nil
-                if not kc or not callback then return end
+                if not kc then return end
+                local action = callback or function()
+                    if visible then hideWindow() else showWindow() end
+                end
                 pressConn = track(UserInputService.InputBegan:Connect(function(inp, proc)
                     if not proc and not listening and inp.KeyCode == kc then
-                        callback(kc)
+                        action(kc)
                     end
                 end))
             end
@@ -1188,4 +1201,5 @@ function VenyxUI:CreateWindow(title, options)
 end
 
 return VenyxUI
+
 
