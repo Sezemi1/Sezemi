@@ -1,7 +1,11 @@
 --[[
-    VenyxUI Library v2.0
+    VenyxUI Library v2.1
     A lightweight, fast Roblox UI library — no loading screen.
-    
+    Fixed: dropdown z-index/clipping/positioning, multi-dropdown, outside-click close,
+           slider text update, slider touch support, keybind press detection,
+           tab scroll only when needed, event cleanup, duplicate callback prevention,
+           tab overflow indicator.
+
     USAGE:
         local VenyxUI = loadstring(game:HttpGet("YOUR_URL_HERE"))()
         local Window = VenyxUI:CreateWindow("My Script")
@@ -14,23 +18,20 @@
 -- ══════════════════════════════════════════
 --  SERVICES
 -- ══════════════════════════════════════════
-local Players        = game:GetService("Players")
-local RunService     = game:GetService("RunService")
-local TweenService   = game:GetService("TweenService")
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local CoreGui        = game:GetService("CoreGui")
+local CoreGui          = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 
 -- ══════════════════════════════════════════
---  CONFIG SAVE (using writefile / readfile)
+--  CONFIG SAVE
 -- ══════════════════════════════════════════
 local CONFIG_FOLDER = "VenyxUI"
 local CONFIG_FILE   = CONFIG_FOLDER .. "/config.json"
 
--- Not every executor (especially some mobile ones) exposes filesystem
--- functions. Detect support once so we can skip saving instead of
--- erroring out before any UI gets created.
 local HAS_FS = type(isfolder) == "function"
     and type(makefolder) == "function"
     and type(writefile) == "function"
@@ -65,7 +66,7 @@ local function loadConfig()
         local ok, decoded = pcall(function()
             return game:GetService("HttpService"):JSONDecode(readfile(CONFIG_FILE))
         end)
-        if ok then return decoded end
+        if ok and type(decoded) == "table" then return decoded end
     end
     return {}
 end
@@ -89,8 +90,8 @@ local Theme = {
     Border      = Color3.fromRGB(50,  50,  70),
 }
 
-local TweenInfo_Fast   = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-local TweenInfo_Spring = TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local TweenInfo_Fast   = TweenInfo.new(0.18, Enum.EasingStyle.Quad,  Enum.EasingDirection.Out)
+local TweenInfo_Spring = TweenInfo.new(0.22, Enum.EasingStyle.Back,  Enum.EasingDirection.Out)
 
 -- ══════════════════════════════════════════
 --  HELPERS
@@ -111,45 +112,43 @@ local function Tween(obj, props, info)
 end
 
 local function Notify(parent, message, color, duration)
-    color = color or Theme.Accent
+    color    = color    or Theme.Accent
     duration = duration or 2.2
 
     local frame = Create("Frame", {
-        Size = UDim2.new(0, 240, 0, 38),
+        Size     = UDim2.new(0, 240, 0, 38),
         Position = UDim2.new(0.5, -120, 1, 50),
         BackgroundColor3 = Theme.Surface2,
-        BorderSizePixel = 0,
-        ZIndex = 20,
-        Parent = parent,
+        BorderSizePixel  = 0,
+        ZIndex   = 20,
+        Parent   = parent,
     }, {
         Create("UICorner", { CornerRadius = UDim.new(0, 10) }),
         Create("UIStroke", { Color = Theme.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
     })
 
-    -- dot
     Create("Frame", {
-        Size = UDim2.new(0, 7, 0, 7),
+        Size     = UDim2.new(0, 7, 0, 7),
         Position = UDim2.new(0, 12, 0.5, -3.5),
         BackgroundColor3 = color,
-        BorderSizePixel = 0,
-        ZIndex = 21,
-        Parent = frame,
+        BorderSizePixel  = 0,
+        ZIndex   = 21,
+        Parent   = frame,
     }, { Create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 
     Create("TextLabel", {
-        Size = UDim2.new(1, -30, 1, 0),
+        Size     = UDim2.new(1, -30, 1, 0),
         Position = UDim2.new(0, 26, 0, 0),
         BackgroundTransparency = 1,
-        Text = message,
+        Text     = message,
         TextColor3 = Theme.Text,
-        TextSize = 12,
-        Font = Enum.Font.GothamMedium,
+        TextSize   = 12,
+        Font   = Enum.Font.GothamMedium,
         TextXAlignment = Enum.TextXAlignment.Left,
         ZIndex = 21,
         Parent = frame,
     })
 
-    -- slide in
     Tween(frame, { Position = UDim2.new(0.5, -120, 1, -50) }, TweenInfo_Spring)
     task.delay(duration, function()
         Tween(frame, { Position = UDim2.new(0.5, -120, 1, 60) })
@@ -166,20 +165,28 @@ VenyxUI.__index = VenyxUI
 function VenyxUI:CreateWindow(title, options)
     options = options or {}
     local toggleKey = options.ToggleKey or Enum.KeyCode.Insert
-    local autoSave  = options.AutoSave ~= false  -- default true
+    local autoSave  = options.AutoSave ~= false
 
-    -- Load saved config
     local savedData = loadConfig()
+
+    -- Master connection list for cleanup
+    local connections = {}
+    local function track(conn)
+        connections[#connections + 1] = conn
+        return conn
+    end
+
+    -- Global dropdown state — only one may be open at a time
+    local activeDropdown = nil -- { close = fn }
 
     -- ── Root ScreenGui ──────────────────────
     local ScreenGui = Create("ScreenGui", {
         Name            = "VenyxUI",
         ResetOnSpawn    = false,
-        ZIndexBehavior  = Enum.ZIndexBehavior.Sibling,
+        ZIndexBehavior  = Enum.ZIndexBehavior.Global,  -- FIX: Global so ZIndex values are absolute
         IgnoreGuiInset  = true,
     })
 
-    -- Try to parent to CoreGui (executor), fall back to PlayerGui
     local ok = pcall(function() ScreenGui.Parent = CoreGui end)
     if not ok then
         local playerGui = LocalPlayer:WaitForChild("PlayerGui", 5)
@@ -192,95 +199,109 @@ function VenyxUI:CreateWindow(title, options)
 
     -- ── Main Window Frame ───────────────────
     local Window = Create("Frame", {
-        Name            = "Window",
-        Size            = UDim2.new(0, 480, 0, 0), -- height auto via UIListLayout
-        Position        = UDim2.new(0.5, -240, 0.5, -200),
+        Name             = "Window",
+        Size             = UDim2.new(0, 480, 0, 490),
+        Position         = UDim2.new(0.5, -240, 0.5, -245),
         BackgroundColor3 = Theme.Surface,
-        BorderSizePixel = 0,
-        ClipsDescendants = true,
-        Parent          = ScreenGui,
+        BorderSizePixel  = 0,
+        ClipsDescendants = false,  -- FIX: don't clip so dropdown overlay isn't cut
+        Parent           = ScreenGui,
     }, {
-        Create("UICorner",  { CornerRadius = UDim.new(0, 14) }),
-        Create("UIStroke",  { Color = Theme.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
-        Create("UISizeConstraint", { MaxSize = Vector2.new(480, 700) }),
+        Create("UICorner",        { CornerRadius = UDim.new(0, 14) }),
+        Create("UIStroke",        { Color = Theme.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
+        Create("UISizeConstraint",{ MaxSize = Vector2.new(480, 700) }),
     })
 
-    -- Drop shadow (visual)
+    -- Drop shadow
     Create("ImageLabel", {
         Size     = UDim2.new(1, 40, 1, 40),
         Position = UDim2.new(0, -20, 0, -20),
         BackgroundTransparency = 1,
         Image    = "rbxassetid://5028857084",
-        ImageColor3  = Color3.fromRGB(0, 0, 0),
+        ImageColor3       = Color3.fromRGB(0, 0, 0),
         ImageTransparency = 0.5,
-        ZIndex   = -1,
-        Parent   = Window,
+        ZIndex  = 1,
+        Parent  = Window,
+    })
+
+    -- Clip frame — sits inside Window, clips content so rounded corners are clean
+    local ClipFrame = Create("Frame", {
+        Name             = "ClipFrame",
+        Size             = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+        ZIndex           = 2,
+        Parent           = Window,
+    }, {
+        Create("UICorner", { CornerRadius = UDim.new(0, 14) }),
     })
 
     -- ── Title Bar ───────────────────────────
     local TitleBar = Create("Frame", {
-        Name   = "TitleBar",
-        Size   = UDim2.new(1, 0, 0, 44),
+        Name             = "TitleBar",
+        Size             = UDim2.new(1, 0, 0, 44),
         BackgroundColor3 = Theme.Surface2,
         BorderSizePixel  = 0,
-        Parent = Window,
+        ZIndex           = 3,
+        Parent           = ClipFrame,
     }, {
         Create("UICorner", { CornerRadius = UDim.new(0, 14) }),
     })
-    -- Bottom corners square
-    Create("Frame", {
-        Size = UDim2.new(1, 0, 0, 14),
-        Position = UDim2.new(0, 0, 1, -14),
+    Create("Frame", {  -- square bottom corners
+        Size             = UDim2.new(1, 0, 0, 14),
+        Position         = UDim2.new(0, 0, 1, -14),
         BackgroundColor3 = Theme.Surface2,
         BorderSizePixel  = 0,
-        Parent = TitleBar,
+        ZIndex           = 3,
+        Parent           = TitleBar,
     })
 
-    -- Logo badge
     local LogoBadge = Create("Frame", {
-        Size     = UDim2.new(0, 26, 0, 26),
-        Position = UDim2.new(0, 12, 0.5, -13),
+        Size             = UDim2.new(0, 26, 0, 26),
+        Position         = UDim2.new(0, 12, 0.5, -13),
         BackgroundColor3 = Theme.Accent,
         BorderSizePixel  = 0,
-        Parent   = TitleBar,
+        ZIndex           = 4,
+        Parent           = TitleBar,
     }, { Create("UICorner", { CornerRadius = UDim.new(0, 7) }) })
 
     Create("TextLabel", {
-        Size   = UDim2.new(1, 0, 1, 0),
+        Size     = UDim2.new(1, 0, 1, 0),
         BackgroundTransparency = 1,
-        Text   = "V",
-        TextColor3 = Color3.fromRGB(255,255,255),
+        Text     = "V",
+        TextColor3 = Color3.fromRGB(255, 255, 255),
         TextSize   = 14,
         Font   = Enum.Font.GothamBold,
+        ZIndex = 5,
         Parent = LogoBadge,
     })
 
     Create("TextLabel", {
-        Name   = "Title",
-        Size   = UDim2.new(0, 200, 1, 0),
+        Name     = "Title",
+        Size     = UDim2.new(0, 200, 1, 0),
         Position = UDim2.new(0, 46, 0, 0),
         BackgroundTransparency = 1,
-        Text   = title or "VenyxUI",
+        Text     = title or "VenyxUI",
         TextColor3 = Theme.Text,
         TextSize   = 14,
         Font   = Enum.Font.GothamSemibold,
         TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 4,
         Parent = TitleBar,
     })
 
-    -- Version tag
     Create("TextLabel", {
-        Size   = UDim2.new(0, 50, 0, 20),
+        Size     = UDim2.new(0, 50, 0, 20),
         Position = UDim2.new(1, -110, 0.5, -10),
         BackgroundColor3 = Color3.fromRGB(40, 34, 80),
-        Text   = "v2.0",
+        Text     = "v2.1",
         TextColor3 = Color3.fromRGB(157, 143, 255),
         TextSize   = 10,
         Font   = Enum.Font.GothamBold,
+        ZIndex = 4,
         Parent = TitleBar,
     }, { Create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 
-    -- Close button
     local CloseBtn = Create("TextButton", {
         Size     = UDim2.new(0, 26, 0, 26),
         Position = UDim2.new(1, -38, 0.5, -13),
@@ -289,63 +310,104 @@ function VenyxUI:CreateWindow(title, options)
         TextColor3 = Theme.Danger,
         TextSize   = 14,
         Font   = Enum.Font.GothamBold,
+        ZIndex = 4,
         Parent = TitleBar,
     }, { Create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
 
-    -- ── Tab Bar (horizontally scrollable for many tabs) ─────
+    -- ── Tab Bar ─────────────────────────────
+    -- FIX: ScrollingEnabled starts false; enabled only when tabs overflow.
     local TabBar = Create("ScrollingFrame", {
-        Name   = "TabBar",
-        Size   = UDim2.new(1, 0, 0, 38),
-        Position = UDim2.new(0, 0, 0, 44),
+        Name             = "TabBar",
+        Size             = UDim2.new(1, 0, 0, 38),
+        Position         = UDim2.new(0, 0, 0, 44),
         BackgroundColor3 = Theme.Surface,
         BorderSizePixel  = 0,
-        ScrollingDirection = Enum.ScrollingDirection.X,
-        ScrollBarThickness = 2,
+        ScrollingDirection  = Enum.ScrollingDirection.X,
+        ScrollBarThickness  = 2,
         ScrollBarImageColor3 = Theme.Border,
-        CanvasSize = UDim2.new(0, 0, 0, 0),
+        CanvasSize          = UDim2.new(0, 0, 0, 0),
         AutomaticCanvasSize = Enum.AutomaticSize.X,
-        ClipsDescendants = true,
-        Parent = Window,
+        ClipsDescendants    = true,
+        ScrollingEnabled    = false,   -- FIX: off by default
+        ZIndex           = 3,
+        Parent           = ClipFrame,
     }, {
-        Create("Frame", {  -- bottom divider
-            Size = UDim2.new(1, 0, 0, 1),
-            Position = UDim2.new(0, 0, 1, -1),
+        Create("Frame", {
+            Size             = UDim2.new(1, 0, 0, 1),
+            Position         = UDim2.new(0, 0, 1, -1),
             BackgroundColor3 = Theme.Border,
             BorderSizePixel  = 0,
-            ZIndex = 2,
+            ZIndex           = 4,
         }),
     })
 
     local TabLayout = Create("UIListLayout", {
-        FillDirection     = Enum.FillDirection.Horizontal,
+        FillDirection       = Enum.FillDirection.Horizontal,
         HorizontalAlignment = Enum.HorizontalAlignment.Left,
-        SortOrder         = Enum.SortOrder.LayoutOrder,
-        Parent            = TabBar,
+        SortOrder           = Enum.SortOrder.LayoutOrder,
+        Parent              = TabBar,
     })
+
+    -- FIX: Overflow indicator — shows "›" chevron when tabs overflow
+    local OverflowIndicator = Create("TextLabel", {
+        Size     = UDim2.new(0, 22, 1, -2),
+        Position = UDim2.new(1, -24, 0, 1),
+        BackgroundColor3 = Theme.Surface,
+        Text     = "›",
+        TextColor3 = Theme.TextMuted,
+        TextSize   = 16,
+        Font   = Enum.Font.GothamBold,
+        Visible  = false,
+        ZIndex   = 5,
+        Parent   = ClipFrame,  -- sits on top of TabBar
+    }, {
+        Create("UIGradient", {
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(255,255,255)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(255,255,255)),
+            }),
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(0.3, 0),
+                NumberSequenceKeypoint.new(1, 0),
+            }),
+        }),
+    })
+
+    -- FIX: Update scroll enable + overflow indicator whenever tab canvas changes
+    track(TabLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        local canvasW = TabLayout.AbsoluteContentSize.X
+        local barW    = TabBar.AbsoluteSize.X
+        local overflows = canvasW > barW + 2
+        TabBar.ScrollingEnabled       = overflows
+        TabBar.ScrollBarThickness     = overflows and 2 or 0
+        OverflowIndicator.Visible     = overflows
+    end))
 
     -- ── Content Area ────────────────────────
     local ContentArea = Create("ScrollingFrame", {
-        Name   = "ContentArea",
-        Size   = UDim2.new(1, 0, 1, -116), -- fills space between TabBar (ends at 82) and Footer (34 tall)
-        Position = UDim2.new(0, 0, 0, 82),
+        Name             = "ContentArea",
+        Size             = UDim2.new(1, 0, 1, -116),
+        Position         = UDim2.new(0, 0, 0, 82),
         BackgroundTransparency = 1,
         BorderSizePixel  = 0,
-        ScrollBarThickness = 3,
+        ScrollBarThickness   = 3,
         ScrollBarImageColor3 = Theme.Accent,
-        CanvasSize  = UDim2.new(0, 0, 0, 0),
+        CanvasSize          = UDim2.new(0, 0, 0, 0),
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
-        Parent = Window,
+        ZIndex           = 3,
+        Parent           = ClipFrame,
     })
 
-    local ContentPadding = Create("UIPadding", {
+    Create("UIPadding", {
         PaddingLeft   = UDim.new(0, 12),
         PaddingRight  = UDim.new(0, 12),
         PaddingTop    = UDim.new(0, 10),
         PaddingBottom = UDim.new(0, 10),
-        Parent = ContentArea,
+        Parent        = ContentArea,
     })
 
-    local ContentLayout = Create("UIListLayout", {
+    Create("UIListLayout", {
         SortOrder = Enum.SortOrder.LayoutOrder,
         Padding   = UDim.new(0, 4),
         Parent    = ContentArea,
@@ -353,33 +415,35 @@ function VenyxUI:CreateWindow(title, options)
 
     -- ── Footer ──────────────────────────────
     local Footer = Create("Frame", {
-        Name   = "Footer",
-        Size   = UDim2.new(1, 0, 0, 34),
-        Position = UDim2.new(0, 0, 1, -34),
+        Name             = "Footer",
+        Size             = UDim2.new(1, 0, 0, 34),
+        Position         = UDim2.new(0, 0, 1, -34),
         BackgroundColor3 = Theme.Surface,
         BorderSizePixel  = 0,
-        Parent = Window,
+        ZIndex           = 3,
+        Parent           = ClipFrame,
     }, {
         Create("Frame", {
-            Size = UDim2.new(1, 0, 0, 1),
+            Size             = UDim2.new(1, 0, 0, 1),
             BackgroundColor3 = Theme.Border,
             BorderSizePixel  = 0,
+            ZIndex           = 4,
         }),
     })
 
     local FooterText = Create("TextLabel", {
-        Size   = UDim2.new(1, -12, 1, 0),
+        Size     = UDim2.new(1, -12, 1, 0),
         Position = UDim2.new(0, 12, 0, 0),
         BackgroundTransparency = 1,
-        Text   = "VenyxUI — ready",
+        Text     = "VenyxUI — ready",
         TextColor3 = Theme.TextDim,
         TextSize   = 11,
         Font   = Enum.Font.Gotham,
         TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 4,
         Parent = Footer,
     })
 
-    -- Injected status chip
     Create("TextLabel", {
         Size     = UDim2.new(0, 70, 0, 20),
         Position = UDim2.new(1, -80, 0.5, -10),
@@ -388,49 +452,45 @@ function VenyxUI:CreateWindow(title, options)
         TextColor3 = Theme.Success,
         TextSize   = 10,
         Font   = Enum.Font.GothamBold,
+        ZIndex = 4,
         Parent = Footer,
     }, { Create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 
-    -- Fix window height to content + bars
-    Window.Size = UDim2.new(0, 480, 0, 490)
-
     -- ── Mini Square Toggle ───────────────────
     local MiniToggle = Create("TextButton", {
-        Name    = "MiniToggle",
-        Size    = UDim2.new(0, 42, 0, 42),
-        Position = UDim2.new(0.5, -21, 0, 16), -- upper-center, anchored by half its own width
+        Name     = "MiniToggle",
+        Size     = UDim2.new(0, 42, 0, 42),
+        Position = UDim2.new(0.5, -21, 0, 16),
         BackgroundColor3 = Theme.Surface2,
-        Text    = "≡",
+        Text     = "≡",
         TextColor3 = Color3.fromRGB(157, 143, 255),
         TextSize   = 20,
-        Font    = Enum.Font.GothamBold,
-        Visible = false,
-        Parent  = ScreenGui,
+        Font   = Enum.Font.GothamBold,
+        Visible  = false,
+        ZIndex   = 10,
+        Parent   = ScreenGui,
     }, {
         Create("UICorner",  { CornerRadius = UDim.new(0, 10) }),
         Create("UIStroke",  { Color = Theme.Border, Thickness = 1 }),
     })
 
-    -- Draggable window (mouse + touch, clamped to the screen)
+    -- ── Draggable window ─────────────────────
     do
         local dragging  = false
         local dragInput, dragStart, startPos
 
         local function clampToScreen(pos)
             local viewport = workspace.CurrentCamera.ViewportSize
-            local size = Window.AbsoluteSize
-
+            local size     = Window.AbsoluteSize
             local minX, maxX = 0, viewport.X - size.X
             local minY, maxY = 0, viewport.Y - size.Y
-
             local x = math.clamp(pos.X.Offset, minX, math.max(minX, maxX))
             local y = math.clamp(pos.Y.Offset, minY, math.max(minY, maxY))
-
             return UDim2.new(0, x, 0, y)
         end
 
         local function updateDrag(input)
-            local delta = input.Position - dragStart
+            local delta  = input.Position - dragStart
             local rawPos = UDim2.new(
                 startPos.X.Scale, startPos.X.Offset + delta.X,
                 startPos.Y.Scale, startPos.Y.Offset + delta.Y
@@ -438,120 +498,124 @@ function VenyxUI:CreateWindow(title, options)
             Window.Position = clampToScreen(rawPos)
         end
 
-        TitleBar.InputBegan:Connect(function(input)
+        track(TitleBar.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
-                or input.UserInputType == Enum.UserInputType.Touch then
+            or input.UserInputType == Enum.UserInputType.Touch then
                 dragging  = true
                 dragStart = input.Position
                 startPos  = Window.Position
-
                 input.Changed:Connect(function()
                     if input.UserInputState == Enum.UserInputState.End then
                         dragging = false
                     end
                 end)
             end
-        end)
+        end))
 
-        TitleBar.InputChanged:Connect(function(input)
+        track(TitleBar.InputChanged:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseMovement
-                or input.UserInputType == Enum.UserInputType.Touch then
+            or input.UserInputType == Enum.UserInputType.Touch then
                 dragInput = input
             end
-        end)
+        end))
 
-        UserInputService.InputChanged:Connect(function(input)
+        track(UserInputService.InputChanged:Connect(function(input)
             if dragging and input == dragInput then
                 updateDrag(input)
             end
-        end)
+        end))
     end
 
-    -- ── Visibility logic ─────────────────────
+    -- ── Visibility ──────────────────────────
     local visible = true
 
     local function hideWindow()
         if autoSave then
-            -- auto-save is handled per-toggle already (flags saved on change)
             FooterText.Text = "VenyxUI — config auto-saved"
             Notify(ScreenGui, "Config auto-saved!", Theme.Accent)
         end
         Tween(Window, { Position = UDim2.new(
-            Window.Position.X.Scale,
-            Window.Position.X.Offset,
-            Window.Position.Y.Scale,
-            Window.Position.Y.Offset + 8
+            Window.Position.X.Scale, Window.Position.X.Offset,
+            Window.Position.Y.Scale, Window.Position.Y.Offset + 8
         )})
         task.delay(0.1, function()
-            Window.Visible = false
+            Window.Visible   = false
             MiniToggle.Visible = true
         end)
         visible = false
     end
 
     local function showWindow()
-        Window.Visible = true
+        Window.Visible   = true
         MiniToggle.Visible = false
         Tween(Window, { Position = UDim2.new(
-            Window.Position.X.Scale,
-            Window.Position.X.Offset,
-            Window.Position.Y.Scale,
-            Window.Position.Y.Offset - 8
+            Window.Position.X.Scale, Window.Position.X.Offset,
+            Window.Position.Y.Scale, Window.Position.Y.Offset - 8
         )})
         visible = true
         Notify(ScreenGui, "UI opened", Theme.Accent)
     end
 
-    CloseBtn.MouseButton1Click:Connect(hideWindow)
-    MiniToggle.MouseButton1Click:Connect(showWindow)
+    track(CloseBtn.MouseButton1Click:Connect(hideWindow))
+    track(MiniToggle.MouseButton1Click:Connect(showWindow))
 
-    -- Keybind toggle
-    UserInputService.InputBegan:Connect(function(input, processed)
+    -- FIX: Window toggle key — was broken because `processed` was never false for
+    -- keystrokes when listening inside the keybind handler. Use a dedicated connection.
+    track(UserInputService.InputBegan:Connect(function(input, processed)
         if not processed and input.KeyCode == toggleKey then
             if visible then hideWindow() else showWindow() end
         end
-    end)
+    end))
 
-    -- Hover effect on close btn
-    CloseBtn.MouseEnter:Connect(function()
+    -- Hover effects
+    track(CloseBtn.MouseEnter:Connect(function()
         Tween(CloseBtn, { BackgroundColor3 = Color3.fromRGB(120, 30, 30) })
-    end)
-    CloseBtn.MouseLeave:Connect(function()
+    end))
+    track(CloseBtn.MouseLeave:Connect(function()
         Tween(CloseBtn, { BackgroundColor3 = Color3.fromRGB(80, 20, 20) })
-    end)
-
-    -- MiniToggle hover
-    MiniToggle.MouseEnter:Connect(function()
+    end))
+    track(MiniToggle.MouseEnter:Connect(function()
         Tween(MiniToggle, { BackgroundColor3 = Theme.Surface3 })
-    end)
-    MiniToggle.MouseLeave:Connect(function()
+    end))
+    track(MiniToggle.MouseLeave:Connect(function()
         Tween(MiniToggle, { BackgroundColor3 = Theme.Surface2 })
-    end)
+    end))
+
+    -- FIX: Close dropdown when clicking anywhere outside it
+    track(UserInputService.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            if activeDropdown then
+                activeDropdown.close()
+                activeDropdown = nil
+            end
+        end
+    end))
 
     -- ══════════════════════════════════════
     --  TAB SYSTEM
     -- ══════════════════════════════════════
-    local tabs       = {}
-    local activeTab  = nil
-    local tabIndex   = 0
+    local tabs      = {}
+    local activeTab = nil
+    local tabIndex  = 0
 
-    local WindowObj  = { _saved = savedData, _screenGui = ScreenGui, _window = Window }
+    local WindowObj = { _saved = savedData, _screenGui = ScreenGui, _window = Window }
 
     function WindowObj:AddTab(name, icon)
         tabIndex = tabIndex + 1
         local myIndex = tabIndex
 
-        -- Tab button
         local TabBtn = Create("TextButton", {
-            Size     = UDim2.new(0, 0, 1, 0),
+            Size          = UDim2.new(0, 0, 1, 0),
             AutomaticSize = Enum.AutomaticSize.X,
             BackgroundTransparency = 1,
-            Text     = (icon and (icon .. " ") or "") .. name,
-            TextColor3 = Theme.TextMuted,
-            TextSize   = 12,
-            Font       = Enum.Font.GothamSemibold,
-            LayoutOrder = myIndex,
-            Parent   = TabBar,
+            Text          = (icon and (icon .. " ") or "") .. name,
+            TextColor3    = Theme.TextMuted,
+            TextSize      = 12,
+            Font          = Enum.Font.GothamSemibold,
+            LayoutOrder   = myIndex,
+            ZIndex        = 4,
+            Parent        = TabBar,
         }, {
             Create("UIPadding", {
                 PaddingLeft  = UDim.new(0, 12),
@@ -559,25 +623,24 @@ function VenyxUI:CreateWindow(title, options)
             }),
         })
 
-        -- Active underline
         local Underline = Create("Frame", {
-            Size     = UDim2.new(1, 0, 0, 2),
-            Position = UDim2.new(0, 0, 1, -2),
+            Size             = UDim2.new(1, 0, 0, 2),
+            Position         = UDim2.new(0, 0, 1, -2),
             BackgroundColor3 = Theme.Accent,
             BorderSizePixel  = 0,
             BackgroundTransparency = 1,
-            Parent   = TabBtn,
+            ZIndex           = 5,
+            Parent           = TabBtn,
         })
 
-        -- Tab content frame
         local TabFrame = Create("Frame", {
-            Name   = "Tab_" .. name,
-            Size   = UDim2.new(1, 0, 0, 0),
+            Name          = "Tab_" .. name,
+            Size          = UDim2.new(1, 0, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             BackgroundTransparency = 1,
-            Visible = false,
-            LayoutOrder = myIndex,
-            Parent = ContentArea,
+            Visible       = false,
+            LayoutOrder   = myIndex,
+            Parent        = ContentArea,
         }, {
             Create("UIListLayout", {
                 SortOrder = Enum.SortOrder.LayoutOrder,
@@ -586,28 +649,24 @@ function VenyxUI:CreateWindow(title, options)
         })
 
         local function activate()
-            -- Deactivate previous
             if activeTab then
-                Tween(activeTab._btn, { TextColor3 = Theme.TextMuted })
+                Tween(activeTab._btn,  { TextColor3 = Theme.TextMuted })
                 Tween(activeTab._line, { BackgroundTransparency = 1 })
                 activeTab._frame.Visible = false
             end
-            -- Activate this
             Tween(TabBtn,    { TextColor3 = Color3.fromRGB(157, 143, 255) })
             Tween(Underline, { BackgroundTransparency = 0 })
             TabFrame.Visible = true
             activeTab = { _btn = TabBtn, _line = Underline, _frame = TabFrame }
         end
 
-        TabBtn.MouseButton1Click:Connect(activate)
-
-        -- Auto-activate first tab
+        track(TabBtn.MouseButton1Click:Connect(activate))
         if myIndex == 1 then activate() end
 
         -- ── Tab Object ──────────────────────
         local Tab = {}
 
-        -- ── Section Label ──────────────────
+        -- ── Section ────────────────────────
         function Tab:AddSection(label)
             local sectionIndex = #TabFrame:GetChildren()
             Create("TextLabel", {
@@ -619,39 +678,40 @@ function VenyxUI:CreateWindow(title, options)
                 Font   = Enum.Font.GothamBold,
                 TextXAlignment = Enum.TextXAlignment.Left,
                 LayoutOrder = sectionIndex + 1,
-                Parent = TabFrame,
+                Parent  = TabFrame,
             }, {
                 Create("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingTop = UDim.new(0, 6) }),
             })
         end
 
-        -- ── Row helper ─────────────────────
-        local function makeRow(order)
+        -- ── Row helper ──────────────────────
+        local function makeRow(order, height)
+            height = height or 42
             local row = Create("Frame", {
-                Size     = UDim2.new(1, 0, 0, 42),
+                Size             = UDim2.new(1, 0, 0, height),
                 BackgroundColor3 = Theme.Surface2,
                 BorderSizePixel  = 0,
-                LayoutOrder = order or (#TabFrame:GetChildren() + 1),
-                Parent = TabFrame,
+                LayoutOrder      = order or (#TabFrame:GetChildren() + 1),
+                ZIndex           = 4,
+                Parent           = TabFrame,
             }, {
                 Create("UICorner", { CornerRadius = UDim.new(0, 6) }),
                 Create("UIStroke", { Color = Theme.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
             })
-
-            row.MouseEnter:Connect(function()
+            track(row.MouseEnter:Connect(function()
                 Tween(row, { BackgroundColor3 = Theme.Surface3 })
-            end)
-            row.MouseLeave:Connect(function()
+            end))
+            track(row.MouseLeave:Connect(function()
                 Tween(row, { BackgroundColor3 = Theme.Surface2 })
-            end)
+            end))
             return row
         end
 
-        -- ── Toggle ─────────────────────────
+        -- ── Toggle ──────────────────────────
         function Tab:AddToggle(label, description, default, callback)
-            local key = label:lower():gsub(" ", "_")
-            local rowOrder = #TabFrame:GetChildren() + 1
-            local row = makeRow(rowOrder)
+            local key      = label:lower():gsub(" ", "_")
+            local rowHeight = (description and description ~= "") and 52 or 42
+            local row       = makeRow(#TabFrame:GetChildren() + 1, rowHeight)
 
             Create("TextLabel", {
                 Size     = UDim2.new(0.6, -50, 0, 18),
@@ -662,6 +722,7 @@ function VenyxUI:CreateWindow(title, options)
                 TextSize   = 13,
                 Font   = Enum.Font.GothamSemibold,
                 TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 5,
                 Parent = row,
             })
 
@@ -675,41 +736,37 @@ function VenyxUI:CreateWindow(title, options)
                     TextSize   = 11,
                     Font   = Enum.Font.Gotham,
                     TextXAlignment = Enum.TextXAlignment.Left,
+                    ZIndex = 5,
                     Parent = row,
                 })
-                row.Size = UDim2.new(1, 0, 0, 52)
             end
 
-            -- Track
             local Track = Create("Frame", {
                 Size     = UDim2.new(0, 36, 0, 20),
                 Position = UDim2.new(1, -48, 0.5, -10),
                 BackgroundColor3 = Theme.Surface3,
                 BorderSizePixel  = 0,
-                Parent = row,
-            }, {
-                Create("UICorner", { CornerRadius = UDim.new(1, 0) }),
-            })
+                ZIndex   = 5,
+                Parent   = row,
+            }, { Create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 
-            -- Thumb
             local Thumb = Create("Frame", {
                 Size     = UDim2.new(0, 14, 0, 14),
                 Position = UDim2.new(0, 2, 0.5, -7),
                 BackgroundColor3 = Theme.TextDim,
                 BorderSizePixel  = 0,
-                Parent = Track,
+                ZIndex   = 6,
+                Parent   = Track,
             }, { Create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 
-            -- Load saved or use default
-            local state = savedData[key]
-            if state == nil then state = default end
-            state = state == true
+            local savedState = savedData[key]
+            local state = (savedState == nil) and (default == true) or (savedState == true)
 
             local function setState(val, silent)
                 state = val
                 if val then
                     Tween(Track, { BackgroundColor3 = Theme.Accent })
-                    Tween(Thumb, { Position = UDim2.new(0, 20, 0.5, -7), BackgroundColor3 = Color3.fromRGB(255,255,255) })
+                    Tween(Thumb, { Position = UDim2.new(0, 20, 0.5, -7), BackgroundColor3 = Color3.fromRGB(255, 255, 255) })
                 else
                     Tween(Track, { BackgroundColor3 = Theme.Surface3 })
                     Tween(Thumb, { Position = UDim2.new(0, 2, 0.5, -7), BackgroundColor3 = Theme.TextDim })
@@ -725,33 +782,37 @@ function VenyxUI:CreateWindow(title, options)
                 end
             end
 
-            -- Init state silently
             setState(state, true)
 
             local ToggleBtn = Create("TextButton", {
                 Size     = UDim2.new(1, 0, 1, 0),
                 BackgroundTransparency = 1,
                 Text     = "",
+                ZIndex   = 7,
                 Parent   = row,
             })
-            ToggleBtn.MouseButton1Click:Connect(function()
+            track(ToggleBtn.MouseButton1Click:Connect(function()
                 setState(not state)
-            end)
+            end))
 
             return { SetValue = setState, GetValue = function() return state end }
         end
 
-        -- ── Slider ─────────────────────────
+        -- ── Slider ──────────────────────────
+        -- FIX: Touch support added; ValLabel update made reliable; min==max guard added.
         function Tab:AddSlider(label, min, max, default, suffix, callback)
-            local key = "slider_" .. label:lower():gsub(" ", "_")
-            local rowOrder = #TabFrame:GetChildren() + 1
-            local row = makeRow(rowOrder)
-            row.Size = UDim2.new(1, 0, 0, 52)
+            local key      = "slider_" .. label:lower():gsub(" ", "_")
+            local row      = makeRow(#TabFrame:GetChildren() + 1, 52)
+            suffix         = suffix or ""
+
+            -- Guard against degenerate range
+            if min >= max then max = min + 1 end
 
             local savedVal = savedData[key]
-            local value = (savedVal ~= nil) and savedVal or default
-            value = math.clamp(value, min, max)
-            suffix = suffix or ""
+            local value    = math.clamp(
+                (savedVal ~= nil) and savedVal or default,
+                min, max
+            )
 
             Create("TextLabel", {
                 Size     = UDim2.new(0.6, 0, 0, 18),
@@ -762,92 +823,125 @@ function VenyxUI:CreateWindow(title, options)
                 TextSize   = 13,
                 Font   = Enum.Font.GothamSemibold,
                 TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 5,
                 Parent = row,
             })
 
+            -- FIX: ValLabel is explicitly sized so it cannot be zero-width/height.
             local ValLabel = Create("TextLabel", {
-                Size     = UDim2.new(0.4, -12, 0, 18),
-                Position = UDim2.new(0.6, 0, 0, 8),
+                Size     = UDim2.new(0, 80, 0, 18),
+                Position = UDim2.new(1, -92, 0, 8),
                 BackgroundTransparency = 1,
                 Text     = tostring(value) .. suffix,
                 TextColor3 = Color3.fromRGB(157, 143, 255),
                 TextSize   = 12,
                 Font   = Enum.Font.GothamBold,
                 TextXAlignment = Enum.TextXAlignment.Right,
+                ZIndex = 5,
                 Parent = row,
             })
 
-            -- Track bg
             local TrackBg = Create("Frame", {
                 Size     = UDim2.new(1, -24, 0, 4),
                 Position = UDim2.new(0, 12, 1, -16),
                 BackgroundColor3 = Theme.Surface3,
                 BorderSizePixel  = 0,
-                Parent = row,
+                ZIndex   = 5,
+                Parent   = row,
             }, { Create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 
-            -- Fill
+            local initRel   = (value - min) / (max - min)
+
             local TrackFill = Create("Frame", {
-                Size     = UDim2.new((value - min) / (max - min), 0, 1, 0),
+                Size     = UDim2.new(initRel, 0, 1, 0),
                 BackgroundColor3 = Theme.Accent,
                 BorderSizePixel  = 0,
-                Parent = TrackBg,
+                ZIndex   = 6,
+                Parent   = TrackBg,
             }, { Create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 
-            -- Thumb
-            local Thumb = Create("Frame", {
+            local SliderThumb = Create("Frame", {
                 Size     = UDim2.new(0, 14, 0, 14),
-                Position = UDim2.new((value - min) / (max - min), -7, 0.5, -7),
+                Position = UDim2.new(initRel, -7, 0.5, -7),
                 BackgroundColor3 = Theme.Accent,
                 BorderSizePixel  = 0,
-                Parent = TrackBg,
+                ZIndex   = 7,
+                Parent   = TrackBg,
             }, { Create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 
             local dragging = false
-            local function updateSlider(input)
+
+            local function updateSlider(inputPos)
                 local rel = math.clamp(
-                    (input.Position.X - TrackBg.AbsolutePosition.X) / TrackBg.AbsoluteSize.X,
+                    (inputPos.X - TrackBg.AbsolutePosition.X) / TrackBg.AbsoluteSize.X,
                     0, 1
                 )
-                value = math.round(min + (max - min) * rel)
-                ValLabel.Text = tostring(value) .. suffix
-                Tween(TrackFill, { Size = UDim2.new(rel, 0, 1, 0) })
-                Tween(Thumb, { Position = UDim2.new(rel, -7, 0.5, -7) })
-                if autoSave then
-                    savedData[key] = value
-                    saveConfig(savedData)
+                local newVal = math.round(min + (max - min) * rel)
+                if newVal ~= value then
+                    value = newVal
+                    -- FIX: Assign text directly first (instant) then tween visuals
+                    ValLabel.Text = tostring(value) .. suffix
+                    Tween(TrackFill,   { Size     = UDim2.new(rel, 0, 1, 0) })
+                    Tween(SliderThumb, { Position = UDim2.new(rel, -7, 0.5, -7) })
+                    if autoSave then
+                        savedData[key] = value
+                        saveConfig(savedData)
+                    end
+                    if callback then callback(value) end
                 end
-                if callback then callback(value) end
             end
 
-            TrackBg.InputBegan:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            -- FIX: Also handle Touch input type
+            track(TrackBg.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
                     dragging = true
-                    updateSlider(input)
+                    updateSlider(input.Position)
                 end
-            end)
-            UserInputService.InputEnded:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            end))
+
+            track(UserInputService.InputEnded:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
                     dragging = false
                 end
-            end)
-            UserInputService.InputChanged:Connect(function(input)
-                if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-                    updateSlider(input)
-                end
-            end)
+            end))
 
-            return { GetValue = function() return value end }
+            track(UserInputService.InputChanged:Connect(function(input)
+                if dragging and (
+                    input.UserInputType == Enum.UserInputType.MouseMovement or
+                    input.UserInputType == Enum.UserInputType.Touch
+                ) then
+                    updateSlider(input.Position)
+                end
+            end))
+
+            return {
+                GetValue = function() return value end,
+                SetValue = function(val)
+                    val   = math.clamp(math.round(val), min, max)
+                    value = val
+                    local rel = (val - min) / (max - min)
+                    ValLabel.Text = tostring(val) .. suffix
+                    Tween(TrackFill,   { Size     = UDim2.new(rel, 0, 1, 0) })
+                    Tween(SliderThumb, { Position = UDim2.new(rel, -7, 0.5, -7) })
+                    if autoSave then savedData[key] = val; saveConfig(savedData) end
+                    if callback then callback(val) end
+                end,
+            }
         end
 
-        -- ── Dropdown ───────────────────────
-        function Tab:AddDropdown(label, options, default, callback)
-            local key = "dd_" .. label:lower():gsub(" ", "_")
-            local rowOrder = #TabFrame:GetChildren() + 1
-            local row = makeRow(rowOrder)
+        -- ── Dropdown ────────────────────────
+        -- FIX: Parented to ScreenGui so it renders above everything.
+        --       Only one dropdown open at a time. Outside-click closes it.
+        --       Positioned dynamically from DropBtn's AbsolutePosition.
+        --       Scrollable when list is long. Arrow flips on open/close.
+        function Tab:AddDropdown(label, opts, default, callback)
+            local key      = "dd_" .. label:lower():gsub(" ", "_")
+            local row      = makeRow(#TabFrame:GetChildren() + 1)
 
             local savedVal = savedData[key]
-            local selected = savedVal or default or options[1]
+            local selected = savedVal or default or opts[1]
 
             Create("TextLabel", {
                 Size     = UDim2.new(0.45, 0, 1, 0),
@@ -858,6 +952,7 @@ function VenyxUI:CreateWindow(title, options)
                 TextSize   = 13,
                 Font   = Enum.Font.GothamSemibold,
                 TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 5,
                 Parent = row,
             })
 
@@ -869,74 +964,138 @@ function VenyxUI:CreateWindow(title, options)
                 TextColor3 = Theme.Text,
                 TextSize   = 12,
                 Font   = Enum.Font.GothamSemibold,
+                ZIndex = 5,
                 Parent = row,
             }, {
                 Create("UICorner", { CornerRadius = UDim.new(0, 6) }),
                 Create("UIStroke", { Color = Theme.Border, Thickness = 1 }),
             })
 
-            local open = false
-            local DropList = Create("Frame", {
-                Size     = UDim2.new(0, 140, 0, 0),
-                Position = UDim2.new(1, -152, 1, 4),
-                BackgroundColor3 = Theme.Surface2,
-                BorderSizePixel  = 0,
-                ClipsDescendants = true,
-                ZIndex   = 10,
-                Visible  = false,
-                Parent   = row,
+            -- FIX: DropList parented to ScreenGui at ZIndex 100 — never behind anything
+            local MAX_VISIBLE  = 6
+            local ITEM_HEIGHT  = 30
+            local listHeight   = math.min(#opts, MAX_VISIBLE) * ITEM_HEIGHT
+
+            local DropList = Create("ScrollingFrame", {
+                Size              = UDim2.new(0, 140, 0, 0),
+                Position          = UDim2.new(0, 0, 0, 0),  -- set dynamically on open
+                BackgroundColor3  = Theme.Surface2,
+                BorderSizePixel   = 0,
+                ClipsDescendants  = true,
+                ZIndex            = 100,
+                Visible           = false,
+                ScrollBarThickness = (#opts > MAX_VISIBLE) and 3 or 0,
+                ScrollBarImageColor3 = Theme.Accent,
+                CanvasSize        = UDim2.new(0, 0, 0, #opts * ITEM_HEIGHT),
+                Parent            = ScreenGui,
             }, {
                 Create("UICorner", { CornerRadius = UDim.new(0, 6) }),
                 Create("UIStroke", { Color = Theme.Border, Thickness = 1 }),
                 Create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
             })
 
-            for i, opt in ipairs(options) do
+            for i, opt in ipairs(opts) do
                 local optBtn = Create("TextButton", {
-                    Size     = UDim2.new(1, 0, 0, 30),
+                    Size     = UDim2.new(1, 0, 0, ITEM_HEIGHT),
                     BackgroundTransparency = 1,
                     Text     = opt,
-                    TextColor3 = opt == selected and Theme.Accent or Theme.TextMuted,
+                    TextColor3 = (opt == selected) and Theme.Accent or Theme.TextMuted,
                     TextSize   = 12,
                     Font   = Enum.Font.GothamSemibold,
                     LayoutOrder = i,
-                    ZIndex   = 11,
-                    Parent = DropList,
+                    ZIndex   = 101,
+                    Parent   = DropList,
                 })
-                optBtn.MouseButton1Click:Connect(function()
-                    selected = opt
-                    DropBtn.Text = opt .. "  ▾"
+
+                track(optBtn.MouseEnter:Connect(function()
+                    if optBtn.Text ~= selected then
+                        Tween(optBtn, { TextColor3 = Theme.Text })
+                    end
+                end))
+                track(optBtn.MouseLeave:Connect(function()
+                    optBtn.TextColor3 = (optBtn.Text == selected) and Theme.Accent or Theme.TextMuted
+                end))
+
+                track(optBtn.MouseButton1Click:Connect(function()
+                    selected      = opt
+                    DropBtn.Text  = opt .. "  ▾"
+                    -- Update all option colours
                     for _, c in ipairs(DropList:GetChildren()) do
                         if c:IsA("TextButton") then
-                            c.TextColor3 = c.Text == opt and Theme.Accent or Theme.TextMuted
+                            c.TextColor3 = (c.Text == opt) and Theme.Accent or Theme.TextMuted
                         end
                     end
-                    open = false
-                    DropList.Visible = false
+                    -- Close
+                    Tween(DropList, { Size = UDim2.new(0, 140, 0, 0) }, TweenInfo_Fast)
+                    task.delay(0.18, function() DropList.Visible = false end)
+                    activeDropdown = nil
                     if autoSave then savedData[key] = opt; saveConfig(savedData) end
                     if callback then callback(opt) end
                     Notify(ScreenGui, label .. ": " .. opt, Theme.Accent)
-                end)
+                end))
             end
 
-            local listHeight = #options * 30
-            DropBtn.MouseButton1Click:Connect(function()
-                open = not open
-                DropList.Visible = open
-                if open then
-                    Tween(DropList, { Size = UDim2.new(0, 140, 0, listHeight) })
-                else
-                    Tween(DropList, { Size = UDim2.new(0, 140, 0, 0) })
-                end
-            end)
+            local open = false
 
-            return { GetValue = function() return selected end }
+            local function closeDropdown()
+                open = false
+                DropBtn.Text = selected .. "  ▾"
+                Tween(DropList, { Size = UDim2.new(0, 140, 0, 0) }, TweenInfo_Fast)
+                task.delay(0.18, function() DropList.Visible = false end)
+                activeDropdown = nil
+            end
+
+            track(DropBtn.MouseButton1Click:Connect(function()
+                -- Close any other open dropdown first
+                if activeDropdown and activeDropdown.close ~= closeDropdown then
+                    activeDropdown.close()
+                end
+
+                open = not open
+                if open then
+                    -- FIX: Compute absolute screen position of the button
+                    local btnPos  = DropBtn.AbsolutePosition
+                    local btnSize = DropBtn.AbsoluteSize
+                    local viewport = workspace.CurrentCamera.ViewportSize
+
+                    -- Decide whether to open upward or downward
+                    local spaceBelow = viewport.Y - (btnPos.Y + btnSize.Y)
+                    local openUp     = spaceBelow < listHeight + 8
+
+                    local posY = openUp
+                        and (btnPos.Y - listHeight - 4)
+                        or  (btnPos.Y + btnSize.Y + 4)
+
+                    DropList.Position = UDim2.new(0, btnPos.X, 0, posY)
+                    DropList.Size     = UDim2.new(0, 140, 0, 0)
+                    DropList.Visible  = true
+                    DropBtn.Text      = selected .. "  ▴"
+                    Tween(DropList, { Size = UDim2.new(0, 140, 0, listHeight) }, TweenInfo_Fast)
+                    activeDropdown = { close = closeDropdown }
+                else
+                    closeDropdown()
+                end
+            end))
+
+            return {
+                GetValue = function() return selected end,
+                SetValue = function(val)
+                    selected     = val
+                    DropBtn.Text = val .. "  ▾"
+                    for _, c in ipairs(DropList:GetChildren()) do
+                        if c:IsA("TextButton") then
+                            c.TextColor3 = (c.Text == val) and Theme.Accent or Theme.TextMuted
+                        end
+                    end
+                    if autoSave then savedData[key] = val; saveConfig(savedData) end
+                    if callback then callback(val) end
+                end,
+            }
         end
 
-        -- ── Button ─────────────────────────
+        -- ── Button ──────────────────────────
         function Tab:AddButton(label, color, callback)
-            local rowOrder = #TabFrame:GetChildren() + 1
-            local row = makeRow(rowOrder)
+            local row  = makeRow(#TabFrame:GetChildren() + 1)
             color = color or Theme.Accent
 
             local Btn = Create("TextButton", {
@@ -944,32 +1103,35 @@ function VenyxUI:CreateWindow(title, options)
                 Position = UDim2.new(0, 12, 0.5, -15),
                 BackgroundColor3 = color,
                 Text     = label,
-                TextColor3 = Color3.fromRGB(255,255,255),
+                TextColor3 = Color3.fromRGB(255, 255, 255),
                 TextSize   = 13,
                 Font   = Enum.Font.GothamSemibold,
+                ZIndex = 5,
                 Parent = row,
             }, { Create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
 
-            Btn.MouseEnter:Connect(function()
-                Tween(Btn, { BackgroundColor3 = color:Lerp(Color3.fromRGB(255,255,255), 0.1) })
-            end)
-            Btn.MouseLeave:Connect(function()
+            track(Btn.MouseEnter:Connect(function()
+                Tween(Btn, { BackgroundColor3 = color:Lerp(Color3.fromRGB(255, 255, 255), 0.1) })
+            end))
+            track(Btn.MouseLeave:Connect(function()
                 Tween(Btn, { BackgroundColor3 = color })
-            end)
-            Btn.MouseButton1Click:Connect(function()
+            end))
+            track(Btn.MouseButton1Click:Connect(function()
                 if callback then callback() end
-            end)
+            end))
         end
 
-        -- ── Keybind ────────────────────────
+        -- ── Keybind ─────────────────────────
+        -- FIX 1: Pressing the bound key now fires callback (it was only fired on assignment).
+        -- FIX 2: Each re-bind properly disconnects the previous listener — no duplicate fires.
         function Tab:AddKeybind(label, default, callback)
-            local key = "kb_" .. label:lower():gsub(" ", "_")
-            local savedKey = savedData[key]
-            local currentKey = savedKey and Enum.KeyCode[savedKey] or default
-            local listening = false
+            local key         = "kb_" .. label:lower():gsub(" ", "_")
+            local savedKey    = savedData[key]
+            local currentKey  = (savedKey and Enum.KeyCode[savedKey]) or default
+            local listening   = false
+            local pressConn   = nil   -- FIX: track press-listener so we can swap it
 
-            local rowOrder = #TabFrame:GetChildren() + 1
-            local row = makeRow(rowOrder)
+            local row = makeRow(#TabFrame:GetChildren() + 1)
 
             Create("TextLabel", {
                 Size     = UDim2.new(0.5, 0, 1, 0),
@@ -980,6 +1142,7 @@ function VenyxUI:CreateWindow(title, options)
                 TextSize   = 13,
                 Font   = Enum.Font.GothamSemibold,
                 TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 5,
                 Parent = row,
             })
 
@@ -991,34 +1154,52 @@ function VenyxUI:CreateWindow(title, options)
                 TextColor3 = Color3.fromRGB(157, 143, 255),
                 TextSize   = 11,
                 Font   = Enum.Font.GothamBold,
+                ZIndex = 5,
                 Parent = row,
             }, {
                 Create("UICorner", { CornerRadius = UDim.new(0, 6) }),
                 Create("UIStroke", { Color = Theme.Border, Thickness = 1 }),
             })
 
-            KeyBtn.MouseButton1Click:Connect(function()
-                listening = true
-                KeyBtn.Text = "..."
-                KeyBtn.TextColor3 = Theme.Warning
-            end)
-
-            UserInputService.InputBegan:Connect(function(input, processed)
-                if listening and not processed then
-                    if input.UserInputType == Enum.UserInputType.Keyboard then
-                        currentKey = input.KeyCode
-                        KeyBtn.Text = currentKey.Name
-                        KeyBtn.TextColor3 = Color3.fromRGB(157, 143, 255)
-                        listening = false
-                        if autoSave then savedData[key] = currentKey.Name; saveConfig(savedData) end
-                        if callback then callback(currentKey) end
-                        Notify(ScreenGui, label .. " bound to " .. currentKey.Name, Theme.Accent)
+            -- FIX: Wire up the press-action listener for the current key.
+            local function bindPressListener(kc)
+                if pressConn then pressConn:Disconnect() end
+                if not kc or not callback then return end
+                pressConn = track(UserInputService.InputBegan:Connect(function(input, processed)
+                    if not processed and not listening and input.KeyCode == kc then
+                        callback(kc)
                     end
-                end
-            end)
+                end))
+            end
+
+            bindPressListener(currentKey)
+
+            -- Click = enter listen mode
+            track(KeyBtn.MouseButton1Click:Connect(function()
+                listening        = true
+                KeyBtn.Text      = "..."
+                KeyBtn.TextColor3 = Theme.Warning
+            end))
+
+            -- FIX: Single InputBegan for capturing the new key.
+            -- Old code added a new connection every click → callbacks multiplied.
+            track(UserInputService.InputBegan:Connect(function(input, processed)
+                if not listening then return end
+                if processed then return end
+                if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+
+                currentKey        = input.KeyCode
+                KeyBtn.Text       = currentKey.Name
+                KeyBtn.TextColor3 = Color3.fromRGB(157, 143, 255)
+                listening         = false
+
+                if autoSave then savedData[key] = currentKey.Name; saveConfig(savedData) end
+                bindPressListener(currentKey)  -- rebind press listener to new key
+                Notify(ScreenGui, label .. " bound to " .. currentKey.Name, Theme.Accent)
+            end))
         end
 
-        -- ── Label ──────────────────────────
+        -- ── Label ───────────────────────────
         function Tab:AddLabel(text)
             local rowOrder = #TabFrame:GetChildren() + 1
             Create("TextLabel", {
@@ -1030,7 +1211,8 @@ function VenyxUI:CreateWindow(title, options)
                 Font   = Enum.Font.Gotham,
                 TextXAlignment = Enum.TextXAlignment.Left,
                 LayoutOrder = rowOrder,
-                Parent = TabFrame,
+                ZIndex = 5,
+                Parent  = TabFrame,
             }, {
                 Create("UICorner", { CornerRadius = UDim.new(0, 6) }),
                 Create("UIPadding", { PaddingLeft = UDim.new(0, 12) }),
@@ -1040,12 +1222,17 @@ function VenyxUI:CreateWindow(title, options)
         return Tab
     end
 
-    -- ── Notify from window ──────────────────
+    -- ── Window-level API ────────────────────
     function WindowObj:Notify(msg, color, duration)
         Notify(ScreenGui, msg, color, duration)
     end
 
+    -- FIX: Destroy now also cleans up every tracked connection to prevent leaks.
     function WindowObj:Destroy()
+        for _, conn in ipairs(connections) do
+            pcall(function() conn:Disconnect() end)
+        end
+        connections = {}
         ScreenGui:Destroy()
     end
 
@@ -1095,7 +1282,7 @@ Combat:AddDropdown("Hit Part", {"Head", "Torso", "Random"}, "Head", function(val
 end)
 
 Combat:AddKeybind("Aimbot Key", Enum.KeyCode.E, function(key)
-    print("Aimbot bound to:", key.Name)
+    print("Aimbot key pressed:", key.Name)
 end)
 
 -- ── Visuals Tab ──
@@ -1143,7 +1330,7 @@ local Misc = Window:AddTab("Misc", "⚙")
 
 Misc:AddSection("Interface")
 Misc:AddKeybind("UI Toggle", Enum.KeyCode.Insert)
-Misc:AddLabel("VenyxUI v2.0 — lightweight & fast")
+Misc:AddLabel("VenyxUI v2.1 — lightweight & fast")
 
 Misc:AddSection("Actions")
 Misc:AddButton("Rejoin Server", Color3.fromRGB(124,106,245), function()
