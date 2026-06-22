@@ -28,20 +28,39 @@ local LocalPlayer = Players.LocalPlayer
 local CONFIG_FOLDER = "VenyxUI"
 local CONFIG_FILE   = CONFIG_FOLDER .. "/config.json"
 
+-- Not every executor (especially some mobile ones) exposes filesystem
+-- functions. Detect support once so we can skip saving instead of
+-- erroring out before any UI gets created.
+local HAS_FS = type(isfolder) == "function"
+    and type(makefolder) == "function"
+    and type(writefile) == "function"
+    and type(readfile) == "function"
+    and type(isfile) == "function"
+
 local function ensureFolder()
-    if not isfolder(CONFIG_FOLDER) then
-        makefolder(CONFIG_FOLDER)
-    end
+    if not HAS_FS then return end
+    local ok = pcall(function()
+        if not isfolder(CONFIG_FOLDER) then
+            makefolder(CONFIG_FOLDER)
+        end
+    end)
+    if not ok then HAS_FS = false end
 end
 
 local function saveConfig(data)
+    if not HAS_FS then return end
     ensureFolder()
-    local encoded = game:GetService("HttpService"):JSONEncode(data)
-    writefile(CONFIG_FILE, encoded)
+    if not HAS_FS then return end
+    pcall(function()
+        local encoded = game:GetService("HttpService"):JSONEncode(data)
+        writefile(CONFIG_FILE, encoded)
+    end)
 end
 
 local function loadConfig()
+    if not HAS_FS then return {} end
     ensureFolder()
+    if not HAS_FS then return {} end
     if isfile(CONFIG_FILE) then
         local ok, decoded = pcall(function()
             return game:GetService("HttpService"):JSONDecode(readfile(CONFIG_FILE))
@@ -162,7 +181,14 @@ function VenyxUI:CreateWindow(title, options)
 
     -- Try to parent to CoreGui (executor), fall back to PlayerGui
     local ok = pcall(function() ScreenGui.Parent = CoreGui end)
-    if not ok then ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+    if not ok then
+        local playerGui = LocalPlayer:WaitForChild("PlayerGui", 5)
+        if playerGui then
+            ScreenGui.Parent = playerGui
+        else
+            warn("[VenyxUI] Could not parent ScreenGui to CoreGui or PlayerGui.")
+        end
+    end
 
     -- ── Main Window Frame ───────────────────
     local Window = Create("Frame", {
