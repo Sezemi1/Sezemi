@@ -317,20 +317,29 @@ function VenyxUI:CreateWindow(title, options)
         }),
     })
 
-    -- LEFT-aligned horizontal layout with left padding
+    -- LEFT-aligned horizontal layout.
+    -- NOTE: Do NOT put UIPadding on a ScrollingFrame with AutomaticCanvasSize —
+    -- it gets included in the canvas measurement and creates phantom empty space.
+    -- Use a leading spacer frame instead for the small left gap.
     local TabLayout = Create("UIListLayout", {
         FillDirection       = Enum.FillDirection.Horizontal,
-        HorizontalAlignment = Enum.HorizontalAlignment.Left,  -- LEFT, not Center
+        HorizontalAlignment = Enum.HorizontalAlignment.Left,
         VerticalAlignment   = Enum.VerticalAlignment.Center,
         SortOrder           = Enum.SortOrder.LayoutOrder,
         Padding             = UDim.new(0, 0),
         Parent              = TabBar,
     })
-    -- Small left padding so first tab isn't jammed to the edge
-    Create("UIPadding", {
-        PaddingLeft = UDim.new(0, 8),
-        Parent      = TabBar,
+
+    -- Thin spacer as first child gives the 8px left gap without touching canvas calc
+    Create("Frame", {
+        Size             = UDim2.new(0, 8, 1, 0),
+        BackgroundTransparency = 1,
+        LayoutOrder      = 0,   -- always first
+        Parent           = TabBar,
     })
+
+    -- Make sure the canvas always starts at the left on first open
+    TabBar.CanvasPosition = Vector2.new(0, 0)
 
     -- Overflow fade + chevron — only visible when tabs don't fit
     local OverflowIndicator = Create("TextLabel", {
@@ -360,8 +369,8 @@ function VenyxUI:CreateWindow(title, options)
     -- Watch canvas width vs bar width — only enable scroll when truly overflowing
     -- Use AbsoluteSize change on the TabBar itself (fires after layout) for accuracy
     local function refreshTabScroll()
-        -- AbsoluteContentSize is the total width of all tab buttons
-        local contentW = TabLayout.AbsoluteContentSize.X + 8  -- +8 for left padding
+        -- AbsoluteContentSize already includes the 8px spacer frame
+        local contentW = TabLayout.AbsoluteContentSize.X
         local barW     = TabBar.AbsoluteSize.X
         local over     = contentW > barW + 1
         TabBar.ScrollingEnabled     = over
