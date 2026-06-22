@@ -1,5 +1,5 @@
 
-print("VenyxUI v2.5 loaded")
+print("VenyxUI v2.5.1 loaded")
 --[[
     VenyxUI Library v2.5
     Fixes: tabs truly left-aligned (AutomaticCanvasSize removed; manual CanvasSize
@@ -175,11 +175,37 @@ function VenyxUI:CreateWindow(title, options)
         end
     end
 
+    -- Invisible full-screen button used to close an open dropdown.
+    -- Sits ABOVE the window's own content (ZIndex 50) but BELOW the
+    -- dropdown list itself (ZIndex 100+), so clicks on the actual
+    -- dropdown options are caught by the options first, while any
+    -- other click anywhere on screen closes the dropdown instead of
+    -- racing with it.
+    local DropdownCatcher = Create("TextButton", {
+        Name             = "DropdownCatcher",
+        Size             = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        AutoButtonColor  = false,
+        Text             = "",
+        ZIndex           = 50,
+        Visible          = false,
+        Parent           = ScreenGui,
+    })
+    track(DropdownCatcher.MouseButton1Click:Connect(function()
+        if activeDropdown then
+            activeDropdown.close()
+            activeDropdown = nil
+        end
+        DropdownCatcher.Visible = false
+    end))
+
     -- ── Window ──────────────────────────────
+    local BASE_W, BASE_H = 480, 490
+
     local Window = Create("Frame", {
         Name             = "Window",
-        Size             = UDim2.new(0, 480, 0, 490),
-        Position         = UDim2.new(0.5, -240, 0.5, -245),
+        Size             = UDim2.new(0, BASE_W, 0, BASE_H),
+        Position         = UDim2.new(0.5, -BASE_W / 2, 0.5, -BASE_H / 2),
         BackgroundColor3 = Theme.Surface,
         BorderSizePixel  = 0,
         ClipsDescendants = false,   -- must be false so DropList overlay works
@@ -190,6 +216,54 @@ function VenyxUI:CreateWindow(title, options)
             ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
         Create("UISizeConstraint", { MaxSize = Vector2.new(480, 700) }),
     })
+
+    -- Scales the *entire* window (and everything inside it, including text,
+    -- toggles, sliders) down uniformly on small/mobile screens, instead of
+    -- letting a fixed 480x490 window overflow a phone's viewport.
+    local WindowScale = Create("UIScale", { Scale = 1, Parent = Window })
+
+    local function clampWindowPosition(pos)
+        local camera = workspace.CurrentCamera
+        if not camera then return pos end
+        local vp = camera.ViewportSize
+        local sz = Window.AbsoluteSize
+        local x  = math.clamp(pos.X.Offset, 0, math.max(0, vp.X - sz.X))
+        local y  = math.clamp(pos.Y.Offset, 0, math.max(0, vp.Y - sz.Y))
+        return UDim2.new(0, x, 0, y)
+    end
+
+    local function updateResponsiveScale(recenter)
+        local camera = workspace.CurrentCamera
+        if not camera then return end
+        local vp = camera.ViewportSize
+        if vp.X <= 0 or vp.Y <= 0 then return end
+
+        -- Leave room around the edges (8% width, 15% height) so the window
+        -- never touches the screen border, and never scale up past 1x.
+        local scale = math.clamp(
+            math.min(vp.X * 0.92 / BASE_W, vp.Y * 0.85 / BASE_H, 1),
+            0.55, 1
+        )
+        WindowScale.Scale = scale
+
+        if recenter then
+            local w, h = BASE_W * scale, BASE_H * scale
+            Window.Position = UDim2.new(0, (vp.X - w) / 2, 0, (vp.Y - h) / 2)
+        else
+            Window.Position = clampWindowPosition(Window.Position)
+        end
+    end
+
+    updateResponsiveScale(true)
+
+    do
+        local camera = workspace.CurrentCamera
+        if camera then
+            track(camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+                updateResponsiveScale(false)
+            end))
+        end
+    end
 
     -- Drop shadow
     Create("ImageLabel", {
@@ -475,17 +549,9 @@ function VenyxUI:CreateWindow(title, options)
     do
         local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
 
-        local function clamp(pos)
-            local vp   = workspace.CurrentCamera.ViewportSize
-            local sz   = Window.AbsoluteSize
-            local x    = math.clamp(pos.X.Offset, 0, math.max(0, vp.X - sz.X))
-            local y    = math.clamp(pos.Y.Offset, 0, math.max(0, vp.Y - sz.Y))
-            return UDim2.new(0, x, 0, y)
-        end
-
         local function doDrag(input)
             local delta  = input.Position - dragStart
-            Window.Position = clamp(UDim2.new(
+            Window.Position = clampWindowPosition(UDim2.new(
                 startPos.X.Scale, startPos.X.Offset + delta.X,
                 startPos.Y.Scale, startPos.Y.Offset + delta.Y
             ))
@@ -564,15 +630,9 @@ function VenyxUI:CreateWindow(title, options)
         Tween(MiniToggle, { BackgroundColor3 = Theme.Surface2 })
     end))
 
-    -- Close open dropdown on any click outside
-    track(UserInputService.InputBegan:Connect(function(inp)
-        if (inp.UserInputType == Enum.UserInputType.MouseButton1
-        or  inp.UserInputType == Enum.UserInputType.Touch)
-        and activeDropdown then
-            activeDropdown.close()
-            activeDropdown = nil
-        end
-    end))
+    -- (Dropdown close-on-outside-click is now handled by DropdownCatcher,
+    -- which sits underneath the dropdown list itself, so it never races
+    -- with clicking an actual option.)
 
     -- ══════════════════════════════════════
     --  TAB SYSTEM
@@ -957,6 +1017,8 @@ function VenyxUI:CreateWindow(title, options)
                 Create("UIListLayout",{ SortOrder = Enum.SortOrder.LayoutOrder }),
             })
 
+            local open = false
+
             for i, opt in ipairs(opts) do
                 local optBtn = Create("TextButton", {
                     Size       = UDim2.new(1, 0, 0, ITEM_H),
@@ -978,12 +1040,13 @@ function VenyxUI:CreateWindow(title, options)
                     optBtn.TextColor3 = (opt == selected) and Theme.Accent or Theme.TextMuted
                 end))
                 track(optBtn.MouseButton1Click:Connect(function()
-                    -- Nil activeDropdown and reset open IMMEDIATELY so the
-                    -- global InputBegan click-outside handler (same frame) is a
-                    -- no-op and does not fight with the toggle logic on DropBtn.
-                    activeDropdown = nil
-                    open           = false
-                    selected       = opt
+                    -- Reset state immediately (this now correctly shares the
+                    -- same local `open` used by the toggle button below, so
+                    -- the next click on DropBtn reliably reopens the list).
+                    activeDropdown          = nil
+                    open                    = false
+                    DropdownCatcher.Visible = false
+                    selected                = opt
                     DropBtn.Text   = opt .. "  v"
                     for _, c in ipairs(DropList:GetChildren()) do
                         if c:IsA("TextButton") then
@@ -998,11 +1061,10 @@ function VenyxUI:CreateWindow(title, options)
                 end))
             end
 
-            local open = false
-
             local function closeDropdown()
-                open           = false
-                activeDropdown = nil
+                open                    = false
+                activeDropdown          = nil
+                DropdownCatcher.Visible = false
                 DropBtn.Text   = selected .. "  v"
                 Tween(DropList, { Size = UDim2.new(0, 140, 0, 0) })
                 -- Capture current list ref so a fast reopen doesn't get hidden
@@ -1035,7 +1097,8 @@ function VenyxUI:CreateWindow(title, options)
                     DropList.Visible  = true
                     DropBtn.Text      = selected .. "  ^"
                     Tween(DropList, { Size = UDim2.new(0, 140, 0, listH) })
-                    activeDropdown = { close = closeDropdown }
+                    activeDropdown          = { close = closeDropdown }
+                    DropdownCatcher.Visible = true
                 else
                     closeDropdown()
                 end
@@ -1201,5 +1264,6 @@ function VenyxUI:CreateWindow(title, options)
 end
 
 return VenyxUI
+
 
 
