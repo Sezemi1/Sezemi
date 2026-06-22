@@ -292,13 +292,18 @@ function VenyxUI:CreateWindow(title, options)
         Parent = TitleBar,
     }, { Create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
 
-    -- ── Tab Bar ─────────────────────────────
-    local TabBar = Create("Frame", {
+    -- ── Tab Bar (horizontally scrollable for many tabs) ─────
+    local TabBar = Create("ScrollingFrame", {
         Name   = "TabBar",
         Size   = UDim2.new(1, 0, 0, 38),
         Position = UDim2.new(0, 0, 0, 44),
         BackgroundColor3 = Theme.Surface,
         BorderSizePixel  = 0,
+        ScrollingDirection = Enum.ScrollingDirection.X,
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = Theme.Border,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.X,
         ClipsDescendants = true,
         Parent = Window,
     }, {
@@ -307,6 +312,7 @@ function VenyxUI:CreateWindow(title, options)
             Position = UDim2.new(0, 0, 1, -1),
             BackgroundColor3 = Theme.Border,
             BorderSizePixel  = 0,
+            ZIndex = 2,
         }),
     })
 
@@ -320,7 +326,7 @@ function VenyxUI:CreateWindow(title, options)
     -- ── Content Area ────────────────────────
     local ContentArea = Create("ScrollingFrame", {
         Name   = "ContentArea",
-        Size   = UDim2.new(1, 0, 0, 420),
+        Size   = UDim2.new(1, 0, 1, -116), -- fills space between TabBar (ends at 82) and Footer (34 tall)
         Position = UDim2.new(0, 0, 0, 82),
         BackgroundTransparency = 1,
         BorderSizePixel  = 0,
