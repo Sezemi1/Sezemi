@@ -1,7 +1,7 @@
 
-print("VenyxUI v2.3 loaded")
+print("VenyxUI v2.4 loaded")
 --[[
-    VenyxUI Library v2.3
+    VenyxUI Library v2.4
     Fixes: tabs truly left-aligned (AutomaticCanvasSize removed; manual CanvasSize
            assignment keeps content anchored to the left edge), scroll only when
            truly full, dropdown arrow uses ASCII, all v2.2 bug fixes retained.
@@ -272,7 +272,7 @@ function VenyxUI:CreateWindow(title, options)
         Size             = UDim2.new(0, 50, 0, 20),
         Position         = UDim2.new(1, -110, 0.5, -10),
         BackgroundColor3 = Color3.fromRGB(40, 34, 80),
-        Text             = "v2.2",
+        Text             = "v2.4",
         TextColor3       = Color3.fromRGB(157, 143, 255),
         TextSize         = 10,
         Font             = Enum.Font.GothamBold,
@@ -294,22 +294,21 @@ function VenyxUI:CreateWindow(title, options)
     }, { Create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
 
     -- ── Tab Bar ─────────────────────────────
-    -- Tabs are LEFT-aligned. Scrolling is only enabled when they overflow.
-    local TabBar = Create("ScrollingFrame", {
-        Name                 = "TabBar",
-        Size                 = UDim2.new(1, 0, 0, 38),
-        Position             = UDim2.new(0, 0, 0, 44),
-        BackgroundColor3     = Theme.Surface,
-        BorderSizePixel      = 0,
-        ScrollingDirection   = Enum.ScrollingDirection.X,
-        ScrollBarThickness   = 0,           -- hidden until overflow
-        ScrollBarImageColor3 = Theme.Accent,
-        CanvasSize           = UDim2.new(0, 0, 0, 0),
-        AutomaticCanvasSize  = Enum.AutomaticSize.None,  -- manual: keep tabs left-anchored
-        ClipsDescendants     = true,
-        ScrollingEnabled     = false,       -- enabled only when tabs overflow
-        ZIndex               = 3,
-        Parent               = ClipFrame,
+    -- Plain clipping Frame + sliding inner frame.
+    -- ScrollingFrame + AutomaticCanvasSize was dropped because tab buttons use
+    -- AutomaticSize.X whose resolution is async: the canvas size ended up 0
+    -- by the time refreshTabScroll ran, making all tabs invisible.
+    -- Plain Frame has no such race — we size TabInner explicitly after each tab
+    -- is added using synchronous TextService measurement.
+    local TabBar = Create("Frame", {
+        Name             = "TabBar",
+        Size             = UDim2.new(1, 0, 0, 38),
+        Position         = UDim2.new(0, 0, 0, 44),
+        BackgroundColor3 = Theme.Surface,
+        BorderSizePixel  = 0,
+        ClipsDescendants = true,
+        ZIndex           = 3,
+        Parent           = ClipFrame,
     }, {
         Create("Frame", {                   -- bottom divider line
             Size             = UDim2.new(1, 0, 0, 1),
@@ -320,31 +319,34 @@ function VenyxUI:CreateWindow(title, options)
         }),
     })
 
-    -- LEFT-aligned horizontal layout.
-    -- NOTE: Do NOT put UIPadding on a ScrollingFrame with AutomaticCanvasSize —
-    -- it gets included in the canvas measurement and creates phantom empty space.
-    -- Use a leading spacer frame instead for the small left gap.
+    -- Inner container — slides left/right to scroll when tabs overflow
+    local TabInner = Create("Frame", {
+        Name             = "TabInner",
+        Size             = UDim2.new(1, 0, 1, 0),
+        Position         = UDim2.new(0, 0, 0, 0),
+        BackgroundTransparency = 1,
+        ZIndex           = 3,
+        Parent           = TabBar,
+    })
+
     local TabLayout = Create("UIListLayout", {
         FillDirection       = Enum.FillDirection.Horizontal,
         HorizontalAlignment = Enum.HorizontalAlignment.Left,
         VerticalAlignment   = Enum.VerticalAlignment.Center,
         SortOrder           = Enum.SortOrder.LayoutOrder,
         Padding             = UDim.new(0, 0),
-        Parent              = TabBar,
+        Parent              = TabInner,
     })
 
-    -- Thin spacer as first child gives the 8px left gap without touching canvas calc
+    -- 8 px left padding spacer (always LayoutOrder 0)
     Create("Frame", {
         Size             = UDim2.new(0, 8, 1, 0),
         BackgroundTransparency = 1,
-        LayoutOrder      = 0,   -- always first
-        Parent           = TabBar,
+        LayoutOrder      = 0,
+        Parent           = TabInner,
     })
 
-    -- Make sure the canvas always starts at the left on first open
-    TabBar.CanvasPosition = Vector2.new(0, 0)
-
-    -- Overflow fade + chevron — only visible when tabs don't fit
+    -- Overflow chevron (only visible when tabs are wider than the bar)
     local OverflowIndicator = Create("TextLabel", {
         Size             = UDim2.new(0, 28, 1, -2),
         Position         = UDim2.new(1, -28, 0, 1),
@@ -358,9 +360,8 @@ function VenyxUI:CreateWindow(title, options)
         ZIndex           = 5,
         Parent           = ClipFrame,
     })
-    -- Fade gradient on the chevron background
     Create("UIGradient", {
-        Rotation    = 180,
+        Rotation     = 180,
         Transparency = NumberSequence.new({
             NumberSequenceKeypoint.new(0, 0),
             NumberSequenceKeypoint.new(0.4, 0),
@@ -369,21 +370,16 @@ function VenyxUI:CreateWindow(title, options)
         Parent = OverflowIndicator,
     })
 
-    -- Watch canvas width vs bar width — only enable scroll when truly overflowing
-    -- Use AbsoluteSize change on the TabBar itself (fires after layout) for accuracy
     local function refreshTabScroll()
-        -- Manually set CanvasSize so content is always left-anchored.
-        -- AutomaticCanvasSize=X causes Roblox to push content rightward
-        -- when the canvas is wider than the frame — using None + manual
-        -- assignment fixes the huge empty space on the left.
         local contentW = TabLayout.AbsoluteContentSize.X
         local barW     = TabBar.AbsoluteSize.X
         local over     = contentW > barW + 1
-        -- Canvas must be at least as wide as the bar so items start at 0
-        TabBar.CanvasSize           = UDim2.new(0, math.max(contentW, barW), 0, 0)
-        TabBar.ScrollingEnabled     = over
-        TabBar.ScrollBarThickness   = over and 2 or 0
-        OverflowIndicator.Visible   = over
+        OverflowIndicator.Visible = over
+        -- Always expand TabInner to fit content so buttons are never cropped
+        TabInner.Size = UDim2.new(0, math.max(contentW, barW), 1, 0)
+        if not over then
+            TabInner.Position = UDim2.new(0, 0, 0, 0)
+        end
     end
 
     track(TabLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(refreshTabScroll))
@@ -590,22 +586,22 @@ function VenyxUI:CreateWindow(title, options)
         tabIndex = tabIndex + 1
         local myIndex = tabIndex
 
+        -- Measure text width synchronously so the button has a real pixel Size
+        -- the instant it is created — no AutomaticSize async delay.
+        local tabLabel = (icon and (icon .. " ") or "") .. name
+        local tabBtnW  = game:GetService("TextService"):GetTextSize(
+            tabLabel, 12, Enum.Font.GothamSemibold, Vector2.new(9999, 38)).X + 20
+
         local TabBtn = Create("TextButton", {
-            Size          = UDim2.new(0, 0, 1, 0),
-            AutomaticSize = Enum.AutomaticSize.X,
+            Size          = UDim2.new(0, tabBtnW, 1, 0),
             BackgroundTransparency = 1,
-            Text          = (icon and (icon .. " ") or "") .. name,
+            Text          = tabLabel,
             TextColor3    = Theme.TextMuted,
             TextSize      = 12,
             Font          = Enum.Font.GothamSemibold,
             LayoutOrder   = myIndex,
             ZIndex        = 4,
-            Parent        = TabBar,
-        }, {
-            Create("UIPadding", {
-                PaddingLeft  = UDim.new(0, 10),
-                PaddingRight = UDim.new(0, 10),
-            }),
+            Parent        = TabInner,
         })
 
         local Underline = Create("Frame", {
@@ -647,6 +643,10 @@ function VenyxUI:CreateWindow(title, options)
 
         track(TabBtn.MouseButton1Click:Connect(activate))
         if myIndex == 1 then activate() end
+
+        -- Refresh canvas now — TabBtn has an explicit pixel Size so
+        -- AbsoluteContentSize is already correct at this point.
+        refreshTabScroll()
 
         -- ──────────────────────────────────
         local Tab = {}
