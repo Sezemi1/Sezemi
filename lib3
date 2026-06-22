@@ -1,9 +1,10 @@
 
-print("VenyxUI v2.2 loaded")
+print("VenyxUI v2.3 loaded")
 --[[
-    VenyxUI Library v2.2
-    Fixes: tabs left-aligned, scroll only when truly full, dropdown arrow uses ASCII,
-           layout cleaned up, all v2.1 bug fixes retained.
+    VenyxUI Library v2.3
+    Fixes: tabs truly left-aligned (AutomaticCanvasSize removed; manual CanvasSize
+           assignment keeps content anchored to the left edge), scroll only when
+           truly full, dropdown arrow uses ASCII, all v2.2 bug fixes retained.
 ]]
 
 -- ══════════════════════════════════════════
@@ -304,7 +305,7 @@ function VenyxUI:CreateWindow(title, options)
         ScrollBarThickness   = 0,           -- hidden until overflow
         ScrollBarImageColor3 = Theme.Accent,
         CanvasSize           = UDim2.new(0, 0, 0, 0),
-        AutomaticCanvasSize  = Enum.AutomaticSize.X,
+        AutomaticCanvasSize  = Enum.AutomaticSize.None,  -- manual: keep tabs left-anchored
         ClipsDescendants     = true,
         ScrollingEnabled     = false,       -- enabled only when tabs overflow
         ZIndex               = 3,
@@ -371,10 +372,15 @@ function VenyxUI:CreateWindow(title, options)
     -- Watch canvas width vs bar width — only enable scroll when truly overflowing
     -- Use AbsoluteSize change on the TabBar itself (fires after layout) for accuracy
     local function refreshTabScroll()
-        -- AbsoluteContentSize already includes the 8px spacer frame
+        -- Manually set CanvasSize so content is always left-anchored.
+        -- AutomaticCanvasSize=X causes Roblox to push content rightward
+        -- when the canvas is wider than the frame — using None + manual
+        -- assignment fixes the huge empty space on the left.
         local contentW = TabLayout.AbsoluteContentSize.X
         local barW     = TabBar.AbsoluteSize.X
         local over     = contentW > barW + 1
+        -- Canvas must be at least as wide as the bar so items start at 0
+        TabBar.CanvasSize           = UDim2.new(0, math.max(contentW, barW), 0, 0)
         TabBar.ScrollingEnabled     = over
         TabBar.ScrollBarThickness   = over and 2 or 0
         OverflowIndicator.Visible   = over
@@ -1182,3 +1188,4 @@ function VenyxUI:CreateWindow(title, options)
 end
 
 return VenyxUI
+
