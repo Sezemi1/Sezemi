@@ -1,7 +1,7 @@
 
-print("VenyxUI v2.5.2 loaded")
+print("VenyxUI v2.5.3 loaded")
 --[[
-    VenyxUI Library v2.5
+    VenyxUI Library v2.5.3
     Fixes: tabs truly left-aligned (AutomaticCanvasSize removed; manual CanvasSize
            assignment keeps content anchored to the left edge), scroll only when
            truly full, dropdown arrow uses ASCII, all v2.2 bug fixes retained.
@@ -777,9 +777,13 @@ function VenyxUI:CreateWindow(title, options)
         end
 
         -- ── Toggle ──────────────────────────
-        function Tab:AddToggle(label, description, default, callback)
+        function Tab:AddToggle(label, description, default, callback, hideFromConfig)
             local key       = label:lower():gsub(" ", "_")
-            saveRegistry[#saveRegistry + 1] = { key = key, label = label }
+            if hideFromConfig then
+                excludedKeys[key] = true
+            else
+                saveRegistry[#saveRegistry + 1] = { key = key, label = label }
+            end
             local hasDesc   = description and description ~= ""
             local row       = makeRow(#TabFrame:GetChildren() + 1, hasDesc and 52 or 42)
 
@@ -828,7 +832,7 @@ function VenyxUI:CreateWindow(title, options)
                 Parent           = Track,
             }, { Create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 
-            local sv    = savedData[key]
+            local sv    = (not hideFromConfig) and savedData[key] or nil
             local state = (sv == nil) and (default == true) or (sv == true)
 
             local function setState(val, silent)
@@ -852,6 +856,15 @@ function VenyxUI:CreateWindow(title, options)
 
             setState(state, true)
 
+            -- Run the callback once on load so a restored saved value
+            -- actually takes effect (e.g. re-applying WalkSpeed), not just
+            -- the toggle's visual. Deferred so the rest of the tab/window
+            -- finishes building first, and skips the resave/Notify that a
+            -- normal (non-silent) setState call would also trigger.
+            if callback then
+                task.defer(function() callback(state) end)
+            end
+
             local btn = Create("TextButton", {
                 Size   = UDim2.new(1, 0, 1, 0),
                 BackgroundTransparency = 1,
@@ -865,14 +878,18 @@ function VenyxUI:CreateWindow(title, options)
         end
 
         -- ── Slider ──────────────────────────
-        function Tab:AddSlider(label, min, max, default, suffix, callback)
+        function Tab:AddSlider(label, min, max, default, suffix, callback, hideFromConfig)
             local key  = "slider_" .. label:lower():gsub(" ", "_")
-            saveRegistry[#saveRegistry + 1] = { key = key, label = label }
+            if hideFromConfig then
+                excludedKeys[key] = true
+            else
+                saveRegistry[#saveRegistry + 1] = { key = key, label = label }
+            end
             local row  = makeRow(#TabFrame:GetChildren() + 1, 52)
             suffix     = suffix or ""
             if min >= max then max = min + 1 end
 
-            local sv    = savedData[key]
+            local sv    = (not hideFromConfig) and savedData[key] or nil
             local value = math.clamp((sv ~= nil) and sv or default, min, max)
 
             Create("TextLabel", {
@@ -967,6 +984,13 @@ function VenyxUI:CreateWindow(title, options)
                 end
             end))
 
+            -- Same fix as toggles: apply the restored value once on load
+            -- so the script's own state (not just the slider's visual)
+            -- reflects it from the start.
+            if callback then
+                task.defer(function() callback(value) end)
+            end
+
             return {
                 GetValue = function() return value end,
                 SetValue = function(val)
@@ -983,11 +1007,15 @@ function VenyxUI:CreateWindow(title, options)
         end
 
         -- ── Dropdown ────────────────────────
-        function Tab:AddDropdown(label, opts, default, callback)
+        function Tab:AddDropdown(label, opts, default, callback, hideFromConfig)
             local key      = "dd_" .. label:lower():gsub(" ", "_")
-            saveRegistry[#saveRegistry + 1] = { key = key, label = label }
+            if hideFromConfig then
+                excludedKeys[key] = true
+            else
+                saveRegistry[#saveRegistry + 1] = { key = key, label = label }
+            end
             local row      = makeRow(#TabFrame:GetChildren() + 1)
-            local sv       = savedData[key]
+            local sv       = (not hideFromConfig) and savedData[key] or nil
             local selected = sv or default or opts[1]
 
             Create("TextLabel", {
@@ -1129,6 +1157,13 @@ function VenyxUI:CreateWindow(title, options)
                 end
             end))
 
+            -- Same fix as toggles/sliders: apply the restored selection
+            -- once on load so the script's own state reflects it from
+            -- the start, not just the dropdown's displayed text.
+            if callback then
+                task.defer(function() callback(selected) end)
+            end
+
             return {
                 GetValue = function() return selected end,
                 SetValue = function(val)
@@ -1174,10 +1209,14 @@ function VenyxUI:CreateWindow(title, options)
         end
 
         -- ── Keybind ─────────────────────────
-        function Tab:AddKeybind(label, default, callback)
+        function Tab:AddKeybind(label, default, callback, hideFromConfig)
             local key        = "kb_" .. label:lower():gsub(" ", "_")
-            saveRegistry[#saveRegistry + 1] = { key = key, label = label }
-            local sv         = savedData[key]
+            if hideFromConfig then
+                excludedKeys[key] = true
+            else
+                saveRegistry[#saveRegistry + 1] = { key = key, label = label }
+            end
+            local sv         = (not hideFromConfig) and savedData[key] or nil
             local currentKey = (sv and Enum.KeyCode[sv]) or default
             local listening  = false
             local pressConn  = nil
@@ -1338,6 +1377,7 @@ function VenyxUI:CreateWindow(title, options)
 end
 
 return VenyxUI
+
 
 
 
