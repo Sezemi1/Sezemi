@@ -1,0 +1,198 @@
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+-- Only run in the target place
+if game.PlaceId ~= 11872917490 then
+    game:GetService("Players").LocalPlayer:Kick("Unsupported game.")
+    return
+end
+
+
+--// Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TeleportService = game:GetService("TeleportService")
+
+--// Player
+local LocalPlayer = Players.LocalPlayer
+
+--// UI
+local VenyxUI = loadstring(
+    game:HttpGet("https://raw.githubusercontent.com/Sezemi1/Sezemi/refs/heads/main/lib3")
+)()
+
+local Window = VenyxUI:CreateWindow("Fabled Legacy", {
+    AutoSave = true
+})
+
+--// Colors
+local Purple = Color3.fromRGB(124, 106, 245)
+local Green = Color3.fromRGB(93, 206, 138)
+
+--// Variables
+local SecretEnabled = false
+local SecretRunning = false
+
+local SpeedEnabled = false
+local SpeedValue = 16
+local DefaultWalkSpeed = 16
+
+--// Helper Functions
+local function getCharacter()
+    return LocalPlayer.Character
+end
+
+local function getHumanoid()
+    local Character = getCharacter()
+
+    if Character then
+        return Character:FindFirstChildOfClass("Humanoid")
+    end
+end
+
+local function applySpeed()
+    local Humanoid = getHumanoid()
+
+    if not Humanoid then
+        return
+    end
+
+    if SpeedEnabled then
+        Humanoid.WalkSpeed = SpeedValue
+    else
+        Humanoid.WalkSpeed = DefaultWalkSpeed
+    end
+end
+
+local function startSecret()
+    if SecretRunning then
+        return
+    end
+
+    SecretRunning = true
+
+    task.spawn(function()
+        local EventGamepassGems = ReplicatedStorage:WaitForChild(
+            "EventGamepassGems",
+            10
+        )
+
+        if not EventGamepassGems then
+            warn("remote does not exist.")
+            SecretRunning = false
+            return
+        end
+
+        while SecretEnabled do
+            local Success, Error = pcall(function()
+                EventGamepassGems:FireServer("\255")
+            end)
+
+            if not Success then
+                warn("remote error:", Error)
+            end
+
+            task.wait(2.5)
+        end
+
+        SecretRunning = false
+    end)
+end
+
+--// Character Respawn Support
+LocalPlayer.CharacterAdded:Connect(function(Character)
+    local Humanoid = Character:WaitForChild("Humanoid")
+
+    DefaultWalkSpeed = Humanoid.WalkSpeed
+
+    task.wait(0.25)
+
+    applySpeed()
+end)
+
+--// Main Tab
+local MainTab = Window:AddTab("Main")
+
+MainTab:AddSection("Secret")
+
+MainTab:AddToggle(
+    "Secret",
+    "Enable This To Make The Unli AFK Reward & Unli Ring to work",
+    false,
+    function(Value)
+        SecretEnabled = Value
+
+        if SecretEnabled then
+            startSecret()
+        end
+    end
+)
+
+-- Auto Ring toggle – excluded from auto-save by the extra 'true' at the end
+MainTab:AddToggle(
+    "Auto Ring",
+    "Auto Claim Ring Not Working rn",
+    false,
+    function(Value)
+        print("Auto Claim Ring")
+    end,
+    true  -- <-- exclude from auto-save
+)
+
+MainTab:AddSection("Claim AFK Reward")
+
+MainTab:AddButton("AFK Reward", Purple, function()
+    local ClaimAFK = ReplicatedStorage:WaitForChild("ClaimAFK", 5)
+
+    if ClaimAFK then
+        ClaimAFK:FireServer()
+    else
+        warn("Remote does not exist.")
+    end
+end)
+
+--// Player Tab
+local PlayerTab = Window:AddTab("Player")
+
+PlayerTab:AddSection("Movement")
+
+PlayerTab:AddToggle("Speed Hack", "", false, function(Value)
+    SpeedEnabled = Value
+    applySpeed()
+end)
+
+PlayerTab:AddSlider("Walk Speed", 16, 500, 16, "", function(Value)
+    SpeedValue = Value
+
+    if SpeedEnabled then
+        applySpeed()
+    end
+end)
+
+--// Misc Tab
+local MiscTab = Window:AddTab("Misc")
+
+MiscTab:AddSection("Interface")
+
+MiscTab:AddKeybind("UI Toggle", Enum.KeyCode.Insert)
+MiscTab:AddLabel("VenyxUI v2.0 - lightweight & fast")
+
+MiscTab:AddSection("Actions")
+
+MiscTab:AddButton("Rejoin Server", Purple, function()
+    TeleportService:Teleport(game.PlaceId, LocalPlayer)
+end)
+
+MiscTab:AddButton("Copy Place ID", Green, function()
+    if setclipboard then
+        setclipboard(tostring(game.PlaceId))
+        Window:Notify("Place ID copied!", Green)
+    else
+        Window:Notify("Clipboard is not supported.", Purple)
+    end
+end)
+
+--// Config Tab
+Window:AddConfigTab("Config")
